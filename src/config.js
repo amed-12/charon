@@ -13,9 +13,15 @@ export const SOL_MINT = 'So11111111111111111111111111111111111111111';
 export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 export const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 export const TELEGRAM_TOPIC_ID = process.env.TELEGRAM_TOPIC_ID;
+export const TELEGRAM_ALLOWED_USER_IDS = (process.env.TELEGRAM_ALLOWED_USER_IDS || '')
+  .split(',')
+  .map(value => value.trim())
+  .filter(Boolean);
 export const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 export const GMGN_API_KEY = process.env.GMGN_API_KEY;
 export const GMGN_ENABLED = process.env.GMGN_ENABLED !== 'false';
+export const GMGN_TOKEN_CACHE_TTL_MS = Number(process.env.GMGN_TOKEN_CACHE_TTL_MS || 3000);
+export const GMGN_MAX_TOKEN_DATA_AGE_SECONDS = Number(process.env.GMGN_MAX_TOKEN_DATA_AGE_SECONDS || 10);
 export const JUPITER_API_KEY = process.env.JUPITER_API_KEY || '';
 export const DRY_RUN_LOCK = process.env.DRY_RUN_LOCK !== 'false';
 export const ENV_TRADING_MODE = process.env.TRADING_MODE || 'dry_run';
@@ -29,6 +35,15 @@ export const LIVE_MIN_SOL_RESERVE_LAMPORTS = Math.floor(Number(process.env.LIVE_
 export const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://api.minimax.io/v1';
 export const LLM_API_KEY = process.env.LLM_API_KEY || '';
 export const LLM_MODEL = process.env.LLM_MODEL || 'MiniMax-M2.7';
+export const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+export const CHAT_AGENT_MODEL = process.env.CHAT_AGENT_MODEL || LLM_MODEL;
+export const CHAT_AGENT_TEMPERATURE = Number(process.env.CHAT_AGENT_TEMPERATURE || 0.2);
+export const CASUAL_CHAT_ENABLED = process.env.CASUAL_CHAT_ENABLED !== 'false';
+export const CHAT_MEMORY_ENABLED = process.env.CHAT_MEMORY_ENABLED !== 'false';
+export const CHAT_HISTORY_LIMIT = Number(process.env.CHAT_HISTORY_LIMIT || 12);
+export const CHAT_ACTIONS_ENABLED = process.env.CHAT_ACTIONS_ENABLED !== 'false';
+export const CHAT_LIVE_ACTIONS_REQUIRE_CONFIRMATION = process.env.CHAT_LIVE_ACTIONS_REQUIRE_CONFIRMATION !== 'false';
+export const CHAT_CONFIG_CHANGES_REQUIRE_CONFIRMATION = process.env.CHAT_CONFIG_CHANGES_REQUIRE_CONFIRMATION !== 'false';
 
 export const DRY_RUN_SIMULATED_SLIPPAGE_BPS = Number(process.env.DRY_RUN_SIMULATED_SLIPPAGE_BPS || 300);
 export const DRY_RUN_PLATFORM_FEE_BPS = Number(process.env.DRY_RUN_PLATFORM_FEE_BPS || 100);

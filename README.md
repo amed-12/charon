@@ -20,7 +20,7 @@ When `DRY_RUN_LOCK=true`:
 - effective mode is forced to `dry_run`
 - `SOLANA_PRIVATE_KEY` is not loaded or required
 - live buy/sell execution paths are blocked
-- Telegram shows `DRY RUN LOCK ACTIVE — live trading disabled.`
+- Telegram shows `DRY RUN LOCK ACTIVE - live trading disabled.`
 
 Use `/mode` to verify the effective mode, `.env` mode, dry-run lock status, and whether a private key is loaded. Use `/unlock_confirm` only for instructions; it does not enable live trading.
 
@@ -137,6 +137,77 @@ LLM_CANDIDATE_MAX_AGE_MS=600000
 
 `LLM_BASE_URL` accepts any OpenAI-compatible endpoint. Set `ENABLE_LLM=false` to disable LLM globally. Individual strategies also have a `use_llm` flag.
 
+## Casual Chat Agent
+
+Charon supports natural-language Telegram messages in addition to slash commands. If a message does not start with `/`, it is routed to the chat agent.
+
+Examples:
+
+```text
+cek posisi saya sekarang
+kenapa kamu buy token ini?
+token mana yang paling berisiko?
+close all positions
+jangan entry token dengan top holder di atas 50%
+mulai dry run dulu
+buatkan ringkasan performa 24 jam
+analyze this mint: <mint>
+set smart_money size jadi 0.03 SOL
+show me only open positions
+export closed positions 7d
+```
+
+Chat agent config:
+
+```env
+CASUAL_CHAT_ENABLED=true
+CHAT_MEMORY_ENABLED=true
+CHAT_HISTORY_LIMIT=12
+CHAT_ACTIONS_ENABLED=true
+CHAT_LIVE_ACTIONS_REQUIRE_CONFIRMATION=true
+CHAT_CONFIG_CHANGES_REQUIRE_CONFIRMATION=true
+TELEGRAM_ALLOWED_USER_IDS=
+OPENROUTER_API_KEY=
+CHAT_AGENT_MODEL=
+CHAT_AGENT_TEMPERATURE=0.2
+```
+
+How it works:
+
+1. Slash commands still use the existing command handler.
+2. Free-form messages load current mode, active strategy, open positions, recent closed positions, PnL, latest candidates, risk status, recent decisions, lessons, preferences, and chat history.
+3. The LLM must return structured JSON with an intent and allowed tool calls.
+4. Charon validates the plan with the action guard before anything runs.
+5. Read-only tools execute immediately.
+6. Risky config/trade actions create Telegram confirmation buttons.
+7. Conversation messages, preferences, pending actions, and agent decisions are stored in SQLite.
+
+If `ENABLE_LLM=false` or `LLM_API_KEY` is missing, Charon falls back to a conservative heuristic router for common requests like positions, PnL, exports, stats, strategy size changes, and close-all confirmation.
+
+The runtime entrypoint is `src/agent/agent.js`. It builds prompts with `src/agent/prompt.js`, parses model JSON with `src/agent/parser.js`, validates actions with `src/agent/guard.js`, runs registered tools through `src/agent/tools.js`, and persists chat memory through `src/agent/memory.js`.
+
+The LLM cannot call arbitrary code. It can only request tools registered through the agent tool registry.
+
+Common read-only chat requests use a fast deterministic router before the LLM planner. Messages such as `cek posisi saya`, `berapa pnl hari ini?`, `mode sekarang apa?`, and `strategi apa?` avoid full LLM planning and use cached read-only tool results when fresh.
+
+If a request takes longer than about 1.5 seconds, Charon sends one short progress update. If it is still running after about 6 seconds, it may send one more update. Requests are processed sequentially per user to avoid racing config/trade actions.
+
+## Chat Safety Rules
+
+The chat agent is intentionally conservative:
+
+- read-only requests can run immediately
+- config changes require confirmation when `CHAT_CONFIG_CHANGES_REQUIRE_CONFIRMATION=true`
+- trade actions require confirmation when `CHAT_LIVE_ACTIONS_REQUIRE_CONFIRMATION=true`
+- live trade execution is never performed directly from casual chat
+- manual buy from chat is disabled; use the existing candidate flow
+- live/confirm mode changes are blocked while `DRY_RUN_LOCK=true`
+- private keys are never shown, loaded under dry-run lock, or written to chat memory
+- `TELEGRAM_ALLOWED_USER_IDS` cannot be changed from chat
+- disabling all risk guardrails from chat is blocked
+
+Confirmation buttons expire after 5 minutes. Confirmed chat actions are written to the agent decision log.
+
 ## Execution Modes
 
 ```env
@@ -232,6 +303,16 @@ Core:
 
 ```text
 /menu
+/chat_on
+/chat_off
+/memory
+/recent_decisions
+/why <token_or_position>
+/remember <text>
+/forget <key>
+/chat_debug on|off
+/queue
+/agent_perf
 /mode
 /unlock_confirm
 /strategy
@@ -312,6 +393,10 @@ Charon uses `charon.sqlite` as source of truth. It stores:
 - risk events
 - exported reports
 - generated lessons
+- chat messages
+- user preferences
+- pending chat actions
+- agent decision logs
 - trade intents
 - saved wallets
 - strategy configs

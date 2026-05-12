@@ -1,15 +1,13 @@
 import { bot } from './bot.js';
-import { TELEGRAM_CHAT_ID } from '../config.js';
+import { TELEGRAM_ALLOWED_USER_IDS, TELEGRAM_CHAT_ID } from '../config.js';
 import { now } from '../utils.js';
 import { numSetting, boolSetting, setSetting, setActiveStrategy, activeStrategy, updateStrategyConfig } from '../db/settings.js';
 import {
-  menuKeyboard,
   filtersText,
   filtersKeyboard,
   agentText,
   agentKeyboard,
   navKeyboard,
-  mainMenuText,
   walletsText,
   candidateButtons,
   sendTpSlDefaults,
@@ -25,17 +23,29 @@ import { createDryRunPosition, canOpenMorePositions, openPositionCount, tradingM
 import { executeLiveBuy, executeConfirmedIntent, rejectIntent } from '../execution/router.js';
 import { sendCandidate, sendPosition, closePosition, updatePositionRule, toggleTrailing, sendPnl, sendPositions, confirmCloseAllPositions, executeCloseAllPositions } from './commands.js';
 import { requestNumericFilterInput, requestStrategyNumericInput } from './input.js';
+import { executePendingAgentAction, rejectPendingAgentAction } from '../agent/agent.js';
+import { editDashboardTab, forgetDashboardMessage, handleDashboardCallback } from './dashboard.js';
 
 export async function handleCallback(query) {
   const data = query.data || '';
   const chatId = query.message?.chat?.id || TELEGRAM_CHAT_ID;
+  if (!isCallbackAuthorized(query, chatId)) {
+    return bot.answerCallbackQuery(query.id, { text: 'not authorized', show_alert: false }).catch(() => {});
+  }
   await answerCallback(query);
+  if (data === 'dash:config') {
+    forgetDashboardMessage(query);
+    return editMenuMessage(query, strategyMenuText(), strategyKeyboard());
+  }
+  if (data.startsWith('dash:')) return handleDashboardCallback(query);
   if (!data.startsWith('input:') && !data.startsWith('stratinput:')) {
     const { pendingNumericInputs } = await import('./input.js');
     pendingNumericInputs.delete(String(chatId));
   }
 
-  if (data === 'menu:main') return editMenuMessage(query, mainMenuText(), menuKeyboard());
+  if (data === 'menu:main') {
+    return editDashboardTab(query, 'home');
+  }
   if (data === 'noop') return null;
   if (data === 'menu:agent') {
     return editMenuMessage(query, agentText(), agentKeyboard());
@@ -50,12 +60,15 @@ export async function handleCallback(query) {
     return editMenuMessage(query, filtersText(), filtersKeyboard());
   }
   if (data === 'menu:filters') return editMenuMessage(query, filtersText(), filtersKeyboard());
-  if (data === 'menu:strategy') return editMenuMessage(query, strategyMenuText(), strategyKeyboard());
+  if (data === 'menu:strategy') {
+    forgetDashboardMessage(query);
+    return editMenuMessage(query, strategyMenuText(), strategyKeyboard());
+  }
   if (data === 'menu:wallets') return editMenuMessage(query, walletsText(), navKeyboard());
   if (data.startsWith('menu:positions')) {
     const [, , source, sourceId] = data.split(':');
     const inferredBatchId = source === 'batch' && sourceId ? sourceId : batchIdFromMessage(query);
-    const back = inferredBatchId ? `back:batch:${inferredBatchId}` : 'menu:main';
+    const back = inferredBatchId ? `back:batch:${inferredBatchId}` : 'dash:home';
     return sendPositions(chatId, query, back);
   }
   if (data === 'menu:pnl') {
@@ -90,6 +103,10 @@ export async function handleCallback(query) {
   if (kind === 'closeall') {
     if (id === 'confirm') return confirmCloseAllPositions(chatId, query);
     if (id === 'execute') return executeCloseAllPositions(chatId, query);
+  }
+  if (kind === 'pending') {
+    if (id === 'execute') return executePendingAgentAction(chatId, Number(value), query);
+    if (id === 'reject') return rejectPendingAgentAction(chatId, Number(value), query);
   }
   if (kind === 'intent') {
     if (value === 'confirm') return executeConfirmedIntent(chatId, Number(id));
@@ -138,6 +155,12 @@ export async function handleCallback(query) {
 
 async function answerCallback(query, text = '') {
   await bot.answerCallbackQuery(query.id, text ? { text } : undefined).catch(() => {});
+}
+
+function isCallbackAuthorized(query, chatId) {
+  const userId = String(query.from?.id || '');
+  if (TELEGRAM_ALLOWED_USER_IDS.length && !TELEGRAM_ALLOWED_USER_IDS.includes(userId)) return false;
+  return !TELEGRAM_CHAT_ID || String(chatId) === String(TELEGRAM_CHAT_ID);
 }
 
 async function editBatchMessage(query, batchId) {

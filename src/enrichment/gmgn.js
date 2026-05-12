@@ -49,6 +49,10 @@ function appendParams(url, params = {}) {
 }
 
 async function gmgnFetch(pathname, { params = {} } = {}) {
+  return (await gmgnFetchWithMeta(pathname, { params })).payload;
+}
+
+async function gmgnFetchWithMeta(pathname, { params = {} } = {}) {
   if (!GMGN_ENABLED) throw new Error('GMGN disabled');
   return enqueueGmgn(async () => {
     const url = new URL(`https://openapi.gmgn.ai${pathname}`);
@@ -74,7 +78,14 @@ async function gmgnFetch(pathname, { params = {} } = {}) {
       } catch {
         payload = { raw: text };
       }
-      if (res.ok) return payload;
+      const meta = {
+        payload,
+        status: res.status,
+        headers: Object.fromEntries(res.headers.entries()),
+        url: url.toString(),
+        pathname,
+      };
+      if (res.ok) return meta;
       const message = gmgnErrorText(res.status, payload, `GMGN ${pathname} ${res.status}`);
       const rateLimited = res.status === 429 || /rate limit|temporarily banned/i.test(String(message));
       if (rateLimited && attempt < maxRetries) {
@@ -180,6 +191,7 @@ function normalizedTrendingRows(payload) {
 
 export {
   gmgnFetch,
+  gmgnFetchWithMeta,
   fetchGmgnTokenInfo,
   gmgnBackoffActive,
   setGmgnBackoff,

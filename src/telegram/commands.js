@@ -1,5 +1,5 @@
 import { bot } from './bot.js';
-import { DRY_RUN_LOCK, ENV_TRADING_MODE, EFFECTIVE_TRADING_MODE, SOLANA_PRIVATE_KEY, TELEGRAM_CHAT_ID } from '../config.js';
+import { DRY_RUN_LOCK, ENV_TRADING_MODE, EFFECTIVE_TRADING_MODE, SOLANA_PRIVATE_KEY, TELEGRAM_ALLOWED_USER_IDS, TELEGRAM_CHAT_ID } from '../config.js';
 import { now, json } from '../utils.js';
 import { escapeHtml, fmtPct, fmtSol, fmtUsd } from '../format.js';
 import { db } from '../db/connection.js';
@@ -34,15 +34,38 @@ import { exportCandidates, exportClosedPositions, exportOpenPositions, exportTra
 import { currentRiskState } from '../services/risk.js';
 import { readinessScore } from '../services/readiness.js';
 import { ACTIVE_STATUSES, POSITION_STATUS, auditPositions, isActiveStatus, statusSqlList } from '../services/positionStatus.js';
+import { formatMemory, handleCasualMessage, setChatEnabled } from '../agent/agent.js';
+import { forgetPreference, recentAgentDecisions, savePreference } from '../agent/memory.js';
+import { perfSnapshot, queueSnapshot } from '../agent/queue.js';
+import { formatQueueReply } from '../agent/formatters.js';
+import { sendDashboard } from './dashboard.js';
+import { detectAddressType, fetchGmgnFullTokenSnapshot, formatGmgnCheck, formatGmgnRawDebug, normalizeSolanaAddress, saveGmgnRawDebug } from '../services/gmgnToken.js';
+import { formatPositionList } from './formatters/positionFormatter.js';
 
 let dryRunResetConfirmAt = 0;
 
 export async function handleMessage(msg) {
   const text = (msg.text || '').trim();
   const chatId = msg.chat.id;
+  if (!isCommandAuthorized(msg)) {
+    if (msg.chat?.type === 'private') await bot.sendMessage(chatId, 'not authorized');
+    return;
+  }
   if (await consumeNumericFilterInput(chatId, text, msg.message_id)) return;
-  if (!text.startsWith('/')) return;
-  if (text.startsWith('/menu')) return sendMenu(chatId);
+  if (!text.startsWith('/')) return handleCasualMessage(msg);
+  if (text.startsWith('/menu') || text.startsWith('/dashboard') || text.startsWith('/dash') || text.startsWith('/home')) return sendDashboard(chatId, msg.from);
+  if (text.startsWith('/chat_on')) return sendChatToggle(chatId, true);
+  if (text.startsWith('/chat_off')) return sendChatToggle(chatId, false);
+  if (text.startsWith('/memory')) return sendMemory(chatId);
+  if (text.startsWith('/recent_decisions')) return sendRecentDecisions(chatId);
+  if (text.startsWith('/why')) return sendWhy(chatId, text.split(/\s+/).slice(1).join(' '));
+  if (text.startsWith('/remember')) return rememberFromCommand(chatId, text.replace(/^\/remember\s*/i, '').trim());
+  if (text.startsWith('/forget')) return forgetFromCommand(chatId, text.split(/\s+/).slice(1).join(' ').trim());
+  if (text.startsWith('/chat_debug')) return setChatDebug(chatId, text.split(/\s+/)[1]);
+  if (text.startsWith('/queue')) return sendAgentQueue(chatId, msg.from?.id);
+  if (text.startsWith('/agent_perf')) return sendAgentPerf(chatId);
+  if (text.startsWith('/gmgn_check')) return sendGmgnCheck(chatId, text.split(/\s+/).slice(1).join(' '));
+  if (text.startsWith('/gmgn_raw')) return sendGmgnRaw(chatId, text.split(/\s+/).slice(1).join(' '));
   if (text.startsWith('/mode')) return sendMode(chatId);
   if (text.startsWith('/unlock_confirm')) return sendUnlockInstructions(chatId);
   if (text.startsWith('/stats')) return sendStats(chatId, text.split(/\s+/)[1] || '24h');
@@ -166,6 +189,13 @@ export async function handleMessage(msg) {
   }
 }
 
+function isCommandAuthorized(msg) {
+  const chatId = String(msg.chat?.id || '');
+  const userId = String(msg.from?.id || '');
+  if (TELEGRAM_ALLOWED_USER_IDS.length && !TELEGRAM_ALLOWED_USER_IDS.includes(userId)) return false;
+  return !TELEGRAM_CHAT_ID || chatId === String(TELEGRAM_CHAT_ID);
+}
+
 export async function sendCandidate(chatId, id) {
   const row = candidateById(id);
   if (!row) return bot.sendMessage(chatId, 'Candidate not found.');
@@ -177,8 +207,8 @@ export async function sendCandidate(chatId, id) {
   });
 }
 
-export async function sendPositions(chatId, query = null, backCallbackData = 'menu:main') {
-  const rows = activePositionRows(30);
+export async function sendPositions(chatId, query = null, backCallbackData = 'dash:home') {
+  const rows = await hydratePositionDisplayRows(activePositionRows(30));
   const open = rows.filter(row => row.status === POSITION_STATUS.OPEN);
   const partial = rows.filter(row => row.status === POSITION_STATUS.PARTIALLY_CLOSED);
   const totalUnrealized = rows.reduce((sum, row) => sum + Number(row.unrealized_pnl_sol ?? row.pnl_sol ?? 0), 0);
@@ -186,10 +216,10 @@ export async function sendPositions(chatId, query = null, backCallbackData = 'me
     `<b>ACTIVE POSITIONS</b> · ${rows.length} open · Total PnL: <b>${fmtSol(totalUnrealized)} SOL</b>`,
     '',
     '<b>OPEN POSITIONS</b>',
-    open.length ? open.map(formatActivePosition).join('\n\n') : 'None.',
+    open.length ? formatPositionList(open, { limit: 5 }) : 'None.',
     '',
     '<b>PARTIALLY CLOSED POSITIONS</b>',
-    partial.length ? partial.map(formatActivePosition).join('\n\n') : 'None.',
+    partial.length ? formatPositionList(partial, { limit: 5 }) : 'None.',
   ].join('\n');
   const keyboardRows = [];
   if (rows.length) keyboardRows.push([{ text: 'Close All Positions', callback_data: 'closeall:confirm' }]);
@@ -209,10 +239,54 @@ export async function sendPosition(chatId, id, query = null) {
       return null;
     });
     if (refreshed) row = { ...row, ...refreshed };
+    row = await hydratePositionDisplayRow(row);
   }
   const buttons = isActiveStatus(row.status) ? positionButtons(id) : {};
   if (query) return editMenuMessage(query, formatPosition(row), buttons);
   await bot.sendMessage(chatId, formatPosition(row), { parse_mode: 'HTML', disable_web_page_preview: true, ...buttons });
+}
+
+async function hydratePositionDisplayRows(rows) {
+  return Promise.all(rows.map(row => hydratePositionDisplayRow(row)));
+}
+
+async function hydratePositionDisplayRow(row) {
+  if (!isActiveStatus(row.status)) return row;
+  if (row.current_mcap != null && row.current_price != null) {
+    return { ...row, dataSource: 'monitor', updatedLabel: row.closed_at || row.opened_at || 'N/A' };
+  }
+  try {
+    const snapshot = await fetchGmgnFullTokenSnapshot(row.mint, { forceFresh: false });
+    const currentMcap = row.current_mcap ?? snapshot.mapped.market_cap_usd ?? null;
+    const currentPrice = row.current_price ?? snapshot.mapped.price_usd ?? null;
+    const entryMcap = Number(row.entry_mcap || 0);
+    const entryPrice = Number(row.entry_price || 0);
+    const pnlPercent = currentMcap != null && entryMcap > 0
+      ? (Number(currentMcap) / entryMcap - 1) * 100
+      : currentPrice != null && entryPrice > 0
+        ? (Number(currentPrice) / entryPrice - 1) * 100
+        : row.unrealized_pnl_percent ?? row.pnl_percent;
+    const pnlSol = Number.isFinite(Number(pnlPercent))
+      ? Number(row.size_sol || 0) * Number(pnlPercent) / 100
+      : row.unrealized_pnl_sol ?? row.pnl_sol;
+    return {
+      ...row,
+      current_mcap: currentMcap,
+      current_price: currentPrice,
+      unrealized_pnl_percent: pnlPercent,
+      unrealized_pnl_sol: pnlSol,
+      dataSource: 'GMGN',
+      updatedLabel: snapshot.mapped.fetched_at
+        ? new Date(snapshot.mapped.fetched_at).toLocaleTimeString('en-GB', { hour12: false })
+        : 'N/A',
+    };
+  } catch (err) {
+    return {
+      ...row,
+      dataSource: `N/A (${err.reason || 'fetch failed'})`,
+      updatedLabel: 'N/A',
+    };
+  }
 }
 
 export async function closePosition(chatId, id, reason) {
@@ -365,19 +439,6 @@ function closedPositionRows(windowArg = '24h', limit = 30) {
 function holdMinutes(row) {
   const end = Number(row.closed_at_ms || now());
   return minutes(Math.max(0, end - Number(row.opened_at_ms || end)));
-}
-
-function formatActivePosition(row) {
-  return [
-    `<b>${escapeHtml(row.symbol || row.mint)}</b>`,
-    `<code>${escapeHtml(row.mint)}</code>`,
-    `Strategy: ${escapeHtml(row.strategy_id || 'sniper')} · Status: <b>${escapeHtml(row.status)}</b>`,
-    `Entry mcap: ${fmtUsd(row.entry_mcap)} · Current mcap: ${fmtUsd(row.current_mcap ?? row.entry_mcap)}`,
-    `High mcap: ${fmtUsd(row.high_water_mcap || row.entry_mcap)}`,
-    `Unrealized: ${fmtSol(row.unrealized_pnl_sol || row.pnl_sol || 0)} SOL (${fmtPct(row.unrealized_pnl_percent ?? row.pnl_percent ?? 0)})`,
-    `Hold: ${holdMinutes(row)}m · Remaining: ${fmtSol(row.remaining_amount ?? row.token_amount_est ?? row.size_sol)}`,
-    row.partial_tp_done ? 'Partial TP: yes' : 'Partial TP: no',
-  ].join('\n');
 }
 
 function formatClosedPosition(row) {
@@ -649,9 +710,127 @@ async function executeDryRunReset(chatId) {
   return bot.sendMessage(chatId, 'Dry-run trades/candidates reset complete. Strategy config, wallets, settings, and env config were preserved.');
 }
 
+async function sendChatToggle(chatId, enabled) {
+  setChatEnabled(enabled);
+  return bot.sendMessage(chatId, `Casual chat agent is now ${enabled ? 'ON' : 'OFF'}.`);
+}
+
+async function sendMemory(chatId) {
+  return bot.sendMessage(chatId, `<b>Chat Memory</b>\n\n${formatMemory()}`, { parse_mode: 'HTML' });
+}
+
+async function sendRecentDecisions(chatId) {
+  const rows = recentAgentDecisions(10);
+  const text = rows.length
+    ? rows.map(row => `#${row.decision_id} <b>${escapeHtml(row.action)}</b>\n${escapeHtml(row.summary || row.result || '')}`).join('\n\n')
+    : 'No chat-agent decisions logged yet.';
+  return bot.sendMessage(chatId, `<b>Recent Decisions</b>\n\n${text}`, { parse_mode: 'HTML' });
+}
+
+async function sendWhy(chatId, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const decisions = recentAgentDecisions(20).filter(row => {
+    const haystack = [row.token_mint, row.token_symbol, row.position_id, row.summary, row.reason, row.user_message].filter(Boolean).join(' ').toLowerCase();
+    return !q || haystack.includes(q);
+  }).slice(0, 5);
+  if (!decisions.length) {
+    return bot.sendMessage(chatId, 'I do not have a matching decision log yet. Try /recent_decisions or ask with a mint/position id.');
+  }
+  const text = decisions.map(row => [
+    `#${row.decision_id} <b>${escapeHtml(row.action)}</b>`,
+    row.summary ? `Summary: ${escapeHtml(row.summary)}` : null,
+    row.reason ? `Reason: ${escapeHtml(row.reason)}` : null,
+    row.key_risks ? `Risks: ${escapeHtml(row.key_risks)}` : null,
+    row.result ? `Result: ${escapeHtml(row.result).slice(0, 700)}` : null,
+  ].filter(Boolean).join('\n')).join('\n\n');
+  return bot.sendMessage(chatId, `<b>Why</b>\n\n${text}`, { parse_mode: 'HTML' });
+}
+
+async function rememberFromCommand(chatId, text) {
+  if (!text) return bot.sendMessage(chatId, 'Usage: /remember <text>');
+  const key = `note:${Date.now()}`;
+  savePreference(key, text, 'chat');
+  return bot.sendMessage(chatId, `Remembered ${key}.`);
+}
+
+async function forgetFromCommand(chatId, key) {
+  if (!key) return bot.sendMessage(chatId, 'Usage: /forget <memory_key>');
+  const changed = forgetPreference(key);
+  return bot.sendMessage(chatId, changed ? `Forgot ${key}.` : `No memory found for ${key}.`);
+}
+
+async function setChatDebug(chatId, value) {
+  const enabled = value === 'on' || value === 'true' || value === '1';
+  setSetting('chat_debug', enabled ? 'true' : 'false');
+  return bot.sendMessage(chatId, `Chat debug is ${enabled ? 'ON' : 'OFF'}.`);
+}
+
+async function sendAgentQueue(chatId, userId = null) {
+  return bot.sendMessage(chatId, formatQueueReply(queueSnapshot(chatId, userId), 'id'));
+}
+
+async function sendAgentPerf(chatId) {
+  const perf = perfSnapshot();
+  const text = [
+    '<b>Agent Performance</b>',
+    '',
+    `Average response: ${perf.averageResponseMs} ms`,
+    `Last response: ${perf.lastResponseMs} ms`,
+    `Fast path hits: ${perf.fastPathHits}`,
+    `Planner LLM calls: ${perf.plannerCalls}`,
+    `Responder LLM calls: ${perf.responderCalls}`,
+    `Fallback formatter: ${perf.fallbackFormatterCount}`,
+    `Failed requests: ${perf.failedRequests}`,
+    `Active queue size: ${perf.activeQueueSize}`,
+    `Cache hits: ${perf.cacheHits}`,
+    `Cache misses: ${perf.cacheMisses}`,
+  ].join('\n');
+  return bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+}
+
+async function sendGmgnCheck(chatId, input) {
+  if (!input) return bot.sendMessage(chatId, 'Usage: /gmgn_check <mint_or_gmgn_url>');
+  try {
+    const snapshot = await fetchGmgnFullTokenSnapshot(input, { forceFresh: true });
+    return bot.sendMessage(chatId, formatGmgnCheck(snapshot), { parse_mode: 'HTML', disable_web_page_preview: true });
+  } catch (err) {
+    return bot.sendMessage(chatId, `Saya belum berhasil ambil data GMGN untuk token ini. Bisa coba refresh atau kirim ulang CA.\n\nReason: ${escapeHtml(err.reason || err.message)}`, { parse_mode: 'HTML' });
+  }
+}
+
+async function sendGmgnRaw(chatId, input) {
+  if (!input) return bot.sendMessage(chatId, 'Usage: /gmgn_raw <mint_or_gmgn_url>');
+  try {
+    const mint = normalizeSolanaAddress(input);
+    const addressType = detectAddressType(mint);
+    const snapshot = await fetchGmgnFullTokenSnapshot(mint, { forceFresh: true });
+    const text = formatGmgnRawDebug(snapshot, addressType);
+    if (text.length <= 3500) {
+      return bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true });
+    }
+    const filePath = saveGmgnRawDebug(snapshot);
+    await bot.sendMessage(chatId, text.slice(0, 3000), { parse_mode: 'HTML', disable_web_page_preview: true });
+    return bot.sendDocument(chatId, filePath);
+  } catch (err) {
+    return bot.sendMessage(chatId, `GMGN raw debug failed: ${escapeHtml(err.reason || err.message)}`, { parse_mode: 'HTML' });
+  }
+}
+
 export function setupTelegram() {
   bot.setMyCommands([
     { command: 'menu', description: 'Open Charon menu' },
+    { command: 'chat_on', description: 'Enable natural-language chat agent' },
+    { command: 'chat_off', description: 'Disable natural-language chat agent' },
+    { command: 'memory', description: 'Show saved chat memories' },
+    { command: 'recent_decisions', description: 'Show recent agent decisions' },
+    { command: 'why', description: 'Explain a recent token/position decision' },
+    { command: 'remember', description: 'Save a chat memory' },
+    { command: 'forget', description: 'Forget a chat memory key' },
+    { command: 'chat_debug', description: 'Toggle chat debug on/off' },
+    { command: 'queue', description: 'Show casual chat queue status' },
+    { command: 'agent_perf', description: 'Show casual chat agent performance' },
+    { command: 'gmgn_check', description: 'Fetch fresh GMGN mapped token data' },
+    { command: 'gmgn_raw', description: 'Debug GMGN raw/mapped token data' },
     { command: 'mode', description: 'Show effective trading mode and dry-run lock' },
     { command: 'strategy', description: 'Show/switch strategy' },
     { command: 'stratset', description: 'Set strategy config (stratset id key value)' },
@@ -684,19 +863,32 @@ export function setupTelegram() {
   bot.on('callback_query', query => handleCallback(query).catch(err => console.log(`[callback] ${err.message}`)));
   bot.on('message', msg => handleMessage(msg).catch(err => console.log(`[message] ${err.message}`)));
   bot.on('polling_error', err => console.log(`[telegram] polling ${telegramErrorText(err)}`));
+  bot.on('webhook_error', err => console.log(`[telegram] webhook ${telegramErrorText(err)}`));
 }
 
 function telegramErrorText(err) {
-  const parts = [
-    err?.code,
-    err?.response?.statusCode ? `HTTP ${err.response.statusCode}` : null,
-    err?.response?.body?.description,
-    err?.message,
-  ].filter(Boolean);
-  if (Array.isArray(err?.errors) && err.errors.length) {
-    parts.push(err.errors.map(inner => [inner.code, inner.address, inner.port, inner.message].filter(Boolean).join(' ')).join(' | '));
+  const seen = new Set();
+  const parts = [];
+  collectTelegramError(err, parts, seen);
+  return parts.filter(Boolean).join(' | ') || String(err);
+}
+
+function collectTelegramError(err, parts, seen) {
+  if (!err || seen.has(err)) return;
+  seen.add(err);
+  const segment = [
+    err.code,
+    err.response?.statusCode ? `HTTP ${err.response.statusCode}` : null,
+    err.response?.body?.description,
+    err.address && err.port ? `${err.address}:${err.port}` : err.address,
+    err.syscall,
+    err.message,
+  ].filter(Boolean).join(' ');
+  if (segment) parts.push(segment);
+  if (err.cause) collectTelegramError(err.cause, parts, seen);
+  if (Array.isArray(err.errors)) {
+    for (const inner of err.errors) collectTelegramError(inner, parts, seen);
   }
-  return parts.join(': ') || String(err);
 }
 
 async function sendMenu(chatId = TELEGRAM_CHAT_ID) {

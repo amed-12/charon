@@ -107,7 +107,7 @@ export function filtersKeyboard() {
           { text: 'Trend 1h', callback_data: 'set:trending_interval:1h' },
           { text: 'Trend 6h', callback_data: 'set:trending_interval:6h' },
         ],
-        [{ text: 'Back', callback_data: 'menu:main' }],
+        [{ text: 'Back', callback_data: 'dash:home' }],
       ],
     },
   };
@@ -155,7 +155,7 @@ export function agentKeyboard() {
           { text: 'Fresh 10m', callback_data: 'set:llm_candidate_max_age_ms:600000' },
           { text: 'Fresh 20m', callback_data: 'set:llm_candidate_max_age_ms:1200000' },
         ],
-        [{ text: 'Back', callback_data: 'menu:main' }],
+        [{ text: 'Back', callback_data: 'dash:home' }],
       ],
     },
   };
@@ -166,14 +166,14 @@ export function navKeyboard(rows = []) {
     reply_markup: {
       inline_keyboard: [
         ...rows,
-        [{ text: 'Back', callback_data: 'menu:main' }],
+        [{ text: 'Back', callback_data: 'dash:home' }],
       ],
     },
   };
 }
 
 export function mainMenuText() {
-  return `🛶 <b>Charon</b>\nDry-run trench agent online.`;
+  return `🛶 <b>Charon</b>\nControl panel online.\nMode: <b>${escapeHtml(tradingMode())}</b>`;
 }
 
 export function walletsText() {
@@ -286,7 +286,7 @@ export function strategyKeyboard() {
         ...selector,
         [{ text: '── Configure ──', callback_data: 'noop' }],
         ...config,
-        [{ text: 'Back', callback_data: 'menu:main' }],
+        [{ text: 'Back', callback_data: 'dash:home' }],
       ],
     },
   };
@@ -405,7 +405,7 @@ export async function sendTpSlDefaults(chatId, query = null) {
           { text: 'Trail On', callback_data: 'set:default_trailing_enabled:true' },
           { text: 'Trail Off', callback_data: 'set:default_trailing_enabled:false' },
         ],
-        [{ text: 'Back', callback_data: 'menu:main' }],
+        [{ text: 'Back', callback_data: 'dash:home' }],
       ],
     },
   };

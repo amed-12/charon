@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check src/app.js && node --check src/config.js && node --check src/liveExecutor.js && node --check src/services/performance.js && node --check src/services/risk.js && node --check src/services/exporter.js && node --check src/services/readiness.js && node --check src/services/positionStatus.js && node --check src/telegram/commands.js && node --check src/telegram/callbacks.js",
+    "check": "node --check index.js && node --check src/app.js && node --check src/config.js && node --check src/liveExecutor.js && node --check src/services/performance.js && node --check src/services/risk.js && node --check src/services/exporter.js && node --check src/services/readiness.js && node --check src/services/positionStatus.js && node --check src/services/dashboardData.js && node --check src/services/gmgnToken.js && node --check src/telegram/formatters/positionFormatter.js && node --check src/agent/prompt.js && node --check src/agent/parser.js && node --check src/agent/tools.js && node --check src/agent/guard.js && node --check src/agent/fastRouter.js && node --check src/agent/queue.js && node --check src/agent/formatters.js && node --check src/agent/responder.js && node --check src/agent/agent.js && node --check src/agent/systemPrompt.js && node --check src/agent/memory.js && node --check src/agent/toolRegistry.js && node --check src/agent/actionGuard.js && node --check src/agent/intentParser.js && node --check src/agent/chatAgent.js && node --check src/telegram/dashboard.js && node --check src/telegram/commands.js && node --check src/telegram/callbacks.js",
     "test": "node --test"
   },
   "dependencies": {

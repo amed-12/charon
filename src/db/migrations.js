@@ -73,11 +73,78 @@ export function runMigrations(db, ensureColumn) {
       recommendation TEXT NOT NULL,
       confidence_level TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      chat_id TEXT NOT NULL,
+      user_id TEXT,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      intent TEXT,
+      tool_calls TEXT,
+      result_summary TEXT
+    );
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS pending_actions (
+      pending_action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      user_id TEXT,
+      chat_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      risk_summary TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+    );
+    CREATE TABLE IF NOT EXISTS agent_decision_logs (
+      decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      token_mint TEXT,
+      token_symbol TEXT,
+      position_id INTEGER,
+      strategy_id TEXT,
+      summary TEXT,
+      reason TEXT,
+      key_risks TEXT,
+      metrics_json TEXT NOT NULL DEFAULT '{}',
+      rejected_alternatives TEXT,
+      user_message TEXT,
+      tool_calls_json TEXT NOT NULL DEFAULT '[]',
+      result TEXT
+    );
     CREATE INDEX IF NOT EXISTS idx_dryrun_metrics_exit ON dryrun_trade_metrics(exit_at_ms, mode);
     CREATE INDEX IF NOT EXISTS idx_dryrun_metrics_strategy ON dryrun_trade_metrics(strategy_id, exit_at_ms);
     CREATE INDEX IF NOT EXISTS idx_risk_events_created ON risk_events(created_at_ms);
     CREATE INDEX IF NOT EXISTS idx_exports_created ON exported_reports(created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_pending_actions_status ON pending_actions(status, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_decisions_time ON agent_decision_logs(timestamp);
   `);
+
+  ensureColumn('chat_messages', 'created_at', 'TEXT');
+  ensureColumn('chat_messages', 'tool_calls_json', 'TEXT');
+  ensureColumn('chat_messages', 'timestamp', 'INTEGER');
+  ensureColumn('user_preferences', 'scope', "TEXT DEFAULT 'global'");
+  ensureColumn('pending_actions', 'risk_summary', 'TEXT');
+  ensureColumn('agent_decision_logs', 'created_at', 'TEXT');
+  ensureColumn('agent_decision_logs', 'timestamp', 'INTEGER');
+
+  ensureColumn('decision_logs', 'actor', 'TEXT');
+  ensureColumn('decision_logs', 'summary', 'TEXT');
+  ensureColumn('decision_logs', 'key_risks', 'TEXT');
+  ensureColumn('decision_logs', 'rejected_alternatives', 'TEXT');
+  ensureColumn('decision_logs', 'user_message', 'TEXT');
+  ensureColumn('decision_logs', 'tool_calls_json', "TEXT DEFAULT '[]'");
+  ensureColumn('decision_logs', 'result', 'TEXT');
 
   ensureColumn('dry_run_positions', 'strategy_id', "TEXT DEFAULT 'sniper'");
   ensureColumn('dry_run_positions', 'partial_tp_done', 'INTEGER DEFAULT 0');
