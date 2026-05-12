@@ -11,19 +11,19 @@ import {
   navKeyboard,
   mainMenuText,
   walletsText,
-  positionsText,
   candidateButtons,
   sendTpSlDefaults,
   strategyMenuText,
   strategyKeyboard,
+  batchRevealButtons,
 } from './menus.js';
 import { sendTelegram, sendBatch, sendPositionOpen, sendTradeIntent } from './send.js';
-import { candidateSummary } from './format.js';
+import { batchRevealSummary, candidateSummary } from './format.js';
 import { candidateById, updateCandidateStatus } from '../db/candidates.js';
-import { storeDecision, logDecisionEvent } from '../db/decisions.js';
+import { batchById, storeDecision, logDecisionEvent } from '../db/decisions.js';
 import { createDryRunPosition, canOpenMorePositions, openPositionCount, tradingMode } from '../db/positions.js';
 import { executeLiveBuy, executeConfirmedIntent, rejectIntent } from '../execution/router.js';
-import { sendCandidate, sendPosition, closePosition, updatePositionRule, toggleTrailing } from './commands.js';
+import { sendCandidate, sendPosition, closePosition, updatePositionRule, toggleTrailing, sendPnl, sendPositions, confirmCloseAllPositions, executeCloseAllPositions } from './commands.js';
 import { requestNumericFilterInput, requestStrategyNumericInput } from './input.js';
 
 export async function handleCallback(query) {
@@ -52,9 +52,13 @@ export async function handleCallback(query) {
   if (data === 'menu:filters') return editMenuMessage(query, filtersText(), filtersKeyboard());
   if (data === 'menu:strategy') return editMenuMessage(query, strategyMenuText(), strategyKeyboard());
   if (data === 'menu:wallets') return editMenuMessage(query, walletsText(), navKeyboard());
-  if (data === 'menu:positions') return editMenuMessage(query, positionsText(), navKeyboard());
+  if (data.startsWith('menu:positions')) {
+    const [, , source, sourceId] = data.split(':');
+    const inferredBatchId = source === 'batch' && sourceId ? sourceId : batchIdFromMessage(query);
+    const back = inferredBatchId ? `back:batch:${inferredBatchId}` : 'menu:main';
+    return sendPositions(chatId, query, back);
+  }
   if (data === 'menu:pnl') {
-    const { sendPnl } = await import('./send.js');
     return sendPnl(chatId, query);
   }
   if (data === 'menu:settings') return editMenuMessage(query, `${agentText()}\n\n${filtersText()}`, navKeyboard([
@@ -82,6 +86,11 @@ export async function handleCallback(query) {
   if (kind === 'input') return requestNumericFilterInput(query, id);
   if (kind === 'set') return updateSettingFromButton(query, id, value);
   if (kind === 'batch') return sendBatch(chatId, Number(id));
+  if (kind === 'back' && id === 'batch') return editBatchMessage(query, Number(value));
+  if (kind === 'closeall') {
+    if (id === 'confirm') return confirmCloseAllPositions(chatId, query);
+    if (id === 'execute') return executeCloseAllPositions(chatId, query);
+  }
   if (kind === 'intent') {
     if (value === 'confirm') return executeConfirmedIntent(chatId, Number(id));
     if (value === 'reject') return rejectIntent(chatId, Number(id));
@@ -129,6 +138,22 @@ export async function handleCallback(query) {
 
 async function answerCallback(query, text = '') {
   await bot.answerCallbackQuery(query.id, text ? { text } : undefined).catch(() => {});
+}
+
+async function editBatchMessage(query, batchId) {
+  const batch = batchById(batchId);
+  if (!batch) return editMenuMessage(query, 'Batch not found.', navKeyboard());
+  return editMenuMessage(
+    query,
+    batchRevealSummary(batchId, batch.rows, batch, batch.trigger_candidate_id),
+    batchRevealButtons(batchId, batch.rows, batch, batch.trigger_candidate_id),
+  );
+}
+
+function batchIdFromMessage(query) {
+  const text = query.message?.text || query.message?.caption || '';
+  const match = text.match(/Batch:\s*#?(\d+)/i);
+  return match?.[1] || null;
 }
 
 export async function editMenuMessage(query, text, extra = {}) {

@@ -12,6 +12,8 @@ import { updateCandidateSnapshot } from '../db/candidates.js';
 import { trending } from '../signals/trending.js';
 import { executeLiveSell } from './router.js';
 import { sendPositionExit } from '../telegram/send.js';
+import { closeMetrics, shouldSimulateTxFailure, updateOpenMetrics } from '../services/performance.js';
+import { POSITION_STATUS } from '../services/positionStatus.js';
 
 export async function freshEntryMarket(mint, candidate) {
   const gmgn = await fetchGmgnTokenInfo(mint, false);
@@ -116,6 +118,7 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   }
   const highWaterMcap = Math.max(Number(position.high_water_mcap || 0), Number(mcap));
   const highWaterPrice = Math.max(Number(position.high_water_price || 0), Number(price || 0));
+  const metrics = updateOpenMetrics(position, mcap);
   let pnlPercent = (Number(mcap) / Number(position.entry_mcap) - 1) * 100;
   let pnlSol = Number(position.size_sol) * pnlPercent / 100;
   if (jupiterPnl && Number.isFinite(Number(jupiterPnl.totalPnlPercentageNative))) {
@@ -138,7 +141,17 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
 
   // Partial TP check
   if (!exitReason && strat?.partial_tp && !position.partial_tp_done && pnlPercent >= strat.partial_tp_at_percent) {
-    db.prepare('UPDATE dry_run_positions SET partial_tp_done = 1 WHERE id = ?').run(position.id);
+    const partialSellRatio = Math.max(0, Math.min(1, Number(strat.partial_tp_sell_percent || 0) / 100));
+    const partialRealizedSol = Number(position.size_sol || 0) * partialSellRatio * pnlPercent / 100;
+    const remainingAmount = Number(position.remaining_amount ?? position.token_amount_est ?? position.size_sol ?? 0) * (1 - partialSellRatio);
+    db.prepare(`
+      UPDATE dry_run_positions
+      SET status = ?, partial_tp_done = 1, remaining_amount = ?,
+          realized_pnl_sol = COALESCE(realized_pnl_sol, 0) + ?,
+          realized_pnl_percent = COALESCE(realized_pnl_percent, 0) + ?,
+          is_closed = 0
+      WHERE id = ?
+    `).run(POSITION_STATUS.PARTIALLY_CLOSED, remainingAmount, partialRealizedSol, partialSellRatio * pnlPercent, position.id);
     console.log(`[position] ${position.id} partial TP at ${pnlPercent.toFixed(1)}% (${strat.partial_tp_sell_percent}% sell)`);
     if (position.execution_mode === 'live' && position.token_amount_raw) {
       try {
@@ -174,9 +187,9 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
 
   db.prepare(`
     UPDATE dry_run_positions
-    SET high_water_mcap = ?, high_water_price = ?, trailing_armed = ?
+    SET high_water_mcap = ?, high_water_price = ?, current_mcap = ?, current_price = ?, trailing_armed = ?
     WHERE id = ?
-  `).run(highWaterMcap, highWaterPrice, trailingArmed ? 1 : 0, position.id);
+  `).run(highWaterMcap, highWaterPrice, mcap, price, trailingArmed ? 1 : 0, position.id);
 
   if (exitReason && autoExit && position.execution_mode === 'live') {
     if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
@@ -195,30 +208,57 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     }
     db.prepare(`
       UPDATE dry_run_positions
-      SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?,
-          pnl_percent = ?, pnl_sol = ?, exit_signature = ?
+      SET status = ?, closed_at_ms = ?, closed_at = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?,
+          pnl_percent = ?, pnl_sol = ?, realized_pnl_percent = ?, realized_pnl_sol = ?,
+          unrealized_pnl_percent = 0, unrealized_pnl_sol = 0, remaining_amount = 0,
+          current_mcap = ?, current_price = ?, is_closed = 1, exit_signature = ?, exit_tx_hash = ?
       WHERE id = ?
-    `).run(now(), price, mcap, exitReason, finalPnlPercent, finalPnlSol, sell.signature, position.id);
+    `).run(POSITION_STATUS.CLOSED, now(), new Date(now()).toISOString(), price, mcap, exitReason,
+      finalPnlPercent, finalPnlSol, finalPnlPercent, finalPnlSol, mcap, price, sell.signature, sell.signature, position.id);
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
     `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent: finalPnlPercent, pnlSol: finalPnlSol, receivedSol: receivedSol ?? null, sell }));
     closed = true;
   } else if (exitReason && autoExit) {
+    let finalReason = exitReason;
+    let finalStatus = POSITION_STATUS.CLOSED;
+    let simulatedExitFailed = false;
+    if (shouldSimulateTxFailure()) {
+      finalReason = 'FAILED_EXIT';
+      finalStatus = POSITION_STATUS.FAILED_EXIT;
+      simulatedExitFailed = true;
+    }
+    const close = closeMetrics(position, {
+      exitMcap: mcap,
+      exitReason: finalReason,
+      exitFailed: simulatedExitFailed,
+      notes: simulatedExitFailed ? `Wanted ${exitReason}; simulated failed exit transaction.` : '',
+    });
     db.prepare(`
       UPDATE dry_run_positions
-      SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?, pnl_percent = ?, pnl_sol = ?
+      SET status = ?, closed_at_ms = ?, closed_at = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?,
+          pnl_percent = ?, pnl_sol = ?, gross_pnl_sol = ?, net_pnl_sol = ?,
+          realized_pnl_percent = ?, realized_pnl_sol = ?, unrealized_pnl_percent = 0, unrealized_pnl_sol = 0,
+          remaining_amount = 0, current_mcap = ?, current_price = ?, is_closed = 1, simulated_exit_failed = ?,
+          max_unrealized_percent = ?, max_drawdown_percent = ?, lowest_mcap = ?
       WHERE id = ?
-    `).run(now(), price, mcap, exitReason, pnlPercent, pnlSol, position.id);
+    `).run(finalStatus, now(), new Date(now()).toISOString(), price, mcap, finalReason,
+      close.pnlPercent, close.netPnlSol, close.grossPnlSol, close.netPnlSol,
+      close.pnlPercent, close.netPnlSol, mcap, price, simulatedExitFailed ? 1 : 0,
+      close.maxUnrealizedPercent, close.maxDrawdownPercent, close.lowestMcap, position.id);
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
-    `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent, pnlSol }));
+    `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, finalReason, json({ pnlPercent: close.pnlPercent, pnlSol: close.netPnlSol, grossPnlSol: close.grossPnlSol, wantedReason: exitReason, simulatedExitFailed }));
+    exitReason = finalReason;
+    finalPnlPercent = close.pnlPercent;
+    finalPnlSol = close.netPnlSol;
     closed = true;
   }
   return {
     ...position,
-    status: closed ? 'closed' : position.status,
+    status: closed ? (exitReason === 'FAILED_EXIT' ? POSITION_STATUS.FAILED_EXIT : POSITION_STATUS.CLOSED) : position.status,
     closed_at_ms: closed ? now() : position.closed_at_ms,
     asset,
     price,
@@ -226,6 +266,8 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     highWaterMcap,
     high_water_mcap: highWaterMcap,
     high_water_price: highWaterPrice,
+    current_mcap: mcap,
+    current_price: price,
     pnlPercent: finalPnlPercent,
     pnl_percent: finalPnlPercent,
     pnlSol: finalPnlSol,
@@ -234,6 +276,8 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     exit_reason: closed ? exitReason : position.exit_reason,
     exit_mcap: closed ? mcap : position.exit_mcap,
     exit_price: closed ? price : position.exit_price,
+    max_unrealized_percent: metrics.maxUnrealizedPercent,
+    max_drawdown_percent: metrics.maxDrawdownPercent,
   };
 }
 

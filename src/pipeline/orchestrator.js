@@ -11,6 +11,7 @@ import { candidateSummary } from '../telegram/format.js';
 import { createTradeIntent } from '../db/intents.js';
 import { refreshCandidateForExecution } from '../execution/positions.js';
 import { executeLiveBuy } from '../execution/router.js';
+import { evaluateCandidateRisk, recordRiskEvent } from '../services/risk.js';
 import { graduated } from '../signals/graduated.js';
 import { setDegenHandler } from '../signals/trending.js';
 import { setCandidateHandler } from '../signals/feeClaim.js';
@@ -87,7 +88,8 @@ export async function processCandidateFromSignals(signals) {
 
   if (batchId) await sendBatchReveal(batchId, rows, batchDecision, candidateId);
 
-  if (selectedRow && boolSetting('agent_enabled', true) && batchDecision.verdict === 'BUY' && batchDecision.confidence >= numSetting('llm_min_confidence', 75)) {
+  const confidenceThreshold = strat.llm_min_confidence ?? numSetting('llm_min_confidence', 75);
+  if (selectedRow && boolSetting('agent_enabled', true) && batchDecision.verdict === 'BUY' && batchDecision.confidence >= confidenceThreshold) {
     if (!canOpenMorePositions()) {
       const max = numSetting('max_open_positions', 3);
       console.log(`[agent] max open positions reached (${openPositionCount()}/${max}), skipping buy ${selectedRow.candidate.token.mint}`);
@@ -113,7 +115,7 @@ export async function processCandidateFromSignals(signals) {
       action: selectedRow ? 'entry_not_approved' : 'no_candidate_selected',
       guardrails: {
         agentEnabled: boolSetting('agent_enabled', true),
-        confidenceThreshold: numSetting('llm_min_confidence', 75),
+        confidenceThreshold,
         openPositions: openPositionCount(),
         maxOpenPositions: numSetting('max_open_positions', 3),
       },
@@ -151,6 +153,15 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
   }
 
   if (mode === 'dry_run') {
+    const risk = evaluateCandidateRisk(freshSelectedRow.candidate, activeStrategy().position_size_sol);
+    recordRiskEvent({
+      eventType: 'dry_run_live_guardrail_simulation',
+      candidateId: freshSelectedRow.id,
+      strategyId: activeStrategy().id,
+      allowed: risk.allowed,
+      reasons: risk.reasons,
+      payload: { checks: risk.checks, state: risk.state },
+    });
     const positionId = await createDryRunPosition(freshSelectedRow.id, freshSelectedRow.candidate, decision, `llm_batch_${batchId}`);
     logDecisionEvent({
       batchId,
@@ -160,7 +171,7 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
       decision,
       mode,
       action: 'dry_run_entry',
-      guardrails: { maxOpenPositions: numSetting('max_open_positions', 3), openPositions: openPositionCount() },
+      guardrails: { maxOpenPositions: numSetting('max_open_positions', 3), openPositions: openPositionCount(), liveRiskAllowed: risk.allowed, liveRiskReasons: risk.reasons },
       execution: { positionId },
     });
     await sendPositionOpen(positionId);

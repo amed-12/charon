@@ -349,7 +349,7 @@ export function batchRevealButtons(batchId, rows, decision, triggerCandidateId =
   if (selectedId) keyboard.push([{ text: 'Reveal Pick', callback_data: `cand:${selectedId}` }]);
   keyboard.push([{ text: 'Reveal Batch', callback_data: `batch:${batchId}` }]);
   if (triggerId && triggerId !== selectedId) keyboard.push([{ text: 'Reveal Trigger', callback_data: `cand:${triggerId}` }]);
-  keyboard.push([{ text: 'Positions', callback_data: 'menu:positions' }]);
+  keyboard.push([{ text: 'Positions', callback_data: `menu:positions:batch:${batchId}` }]);
   return { reply_markup: { inline_keyboard: keyboard } };
 }
 

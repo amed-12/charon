@@ -6,6 +6,7 @@ import {
   JUPITER_SLIPPAGE_BPS,
   JUPITER_SWAP_BASE_URL,
   JSON_HEADERS,
+  DRY_RUN_LOCK,
   SOLANA_PRIVATE_KEY,
   SOLANA_RPC_URL,
 } from './config.js';
@@ -21,6 +22,12 @@ function parseKeypair(secret) {
 }
 
 export function initLiveExecution() {
+  if (DRY_RUN_LOCK) {
+    liveWallet = null;
+    solanaConnection = null;
+    console.log('[live] DRY RUN LOCK ACTIVE - live wallet not loaded');
+    return;
+  }
   if (!SOLANA_PRIVATE_KEY) return;
   try {
     liveWallet = parseKeypair(SOLANA_PRIVATE_KEY);
@@ -53,6 +60,7 @@ export async function fetchLiveTokenBalance(mint) {
 }
 
 export function requireLiveExecution() {
+  if (DRY_RUN_LOCK) throw new Error('DRY RUN LOCK ACTIVE - live trading disabled.');
   if (!liveWallet || !solanaConnection) throw new Error('SOLANA_PRIVATE_KEY is required for live execution.');
   if (!JUPITER_API_KEY) throw new Error('JUPITER_API_KEY is required for live execution.');
 }

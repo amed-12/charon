@@ -1,5 +1,5 @@
 import { setDefaultResultOrder } from 'node:dns';
-import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, GRADUATED_POLL_MS, TRENDING_POLL_MS, POSITION_CHECK_MS, validateConfig } from './config.js';
+import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, GRADUATED_POLL_MS, TRENDING_POLL_MS, POSITION_CHECK_MS, validateConfig, DRY_RUN_LOCK } from './config.js';
 import { initDb } from './db/connection.js';
 import { initLiveExecution } from './liveExecutor.js';
 import { setupTelegram } from './telegram/commands.js';
@@ -15,6 +15,7 @@ export async function startCharon() {
   initDb();
   initLiveExecution();
   setupTelegram();
+  if (DRY_RUN_LOCK) await sendTelegram('DRY RUN LOCK ACTIVE — live trading disabled.').catch(() => {});
 
   if (SIGNAL_SERVER_URL) {
     // ── Server mode: fetch signals from signal server ──────────────────────

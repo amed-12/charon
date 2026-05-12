@@ -19,13 +19,20 @@ export async function runLearning(chatId, windowArg = '12h') {
 }
 
 export async function sendLessons(chatId) {
-  const rows = db.prepare(`
-    SELECT id, created_at_ms, lesson
-    FROM learning_lessons
-    WHERE status = 'active'
-    ORDER BY id DESC
+  const generated = db.prepare(`
+    SELECT lesson_id AS id, created_at_ms,
+           finding || ' Evidence: ' || evidence || ' Recommendation: ' || recommendation || ' [' || confidence_level || ']' AS lesson
+    FROM generated_lessons
+    ORDER BY lesson_id DESC
     LIMIT 10
   `).all();
+  const rows = generated.length ? generated : db.prepare(`
+      SELECT id, created_at_ms, lesson
+      FROM learning_lessons
+      WHERE status = 'active'
+      ORDER BY id DESC
+      LIMIT 10
+    `).all();
   const text = rows.length
     ? rows.map((row, index) => `${index + 1}. ${escapeHtml(row.lesson)}`).join('\n')
     : 'No active lessons yet. Run /learn 12h after some dry-run exits.';

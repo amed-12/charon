@@ -1,6 +1,7 @@
 import { db } from './connection.js';
 import { now, safeJson, json } from '../utils.js';
 import { numSetting } from './settings.js';
+import { ACTIVE_STATUSES, statusSqlList } from '../services/positionStatus.js';
 
 export function candidateSignalKey(candidate, signature = null) {
   if (signature) return `${signature}:${candidate.token.mint}`;
@@ -79,7 +80,7 @@ export function recentEligibleCandidates(limit = 10) {
     FROM candidates
     WHERE status IN ('candidate', 'watch', 'buy', 'pass')
       AND created_at_ms >= ?
-      AND id NOT IN (SELECT COALESCE(candidate_id, -1) FROM dry_run_positions WHERE status = 'open')
+      AND id NOT IN (SELECT COALESCE(candidate_id, -1) FROM dry_run_positions WHERE status IN (${statusSqlList(ACTIVE_STATUSES)}))
     ORDER BY id DESC
     LIMIT ?
   `).all(cutoff, limit);

@@ -1,7 +1,7 @@
 import { now, json } from '../utils.js';
 import { numSetting, boolSetting } from '../db/settings.js';
 import { db } from '../db/connection.js';
-import { WSOL_MINT, LIVE_MIN_SOL_RESERVE_LAMPORTS } from '../config.js';
+import { WSOL_MINT, LIVE_MIN_SOL_RESERVE_LAMPORTS, DRY_RUN_LOCK } from '../config.js';
 import { escapeHtml, fmtSol } from '../format.js';
 import { executeJupiterSwap, liveWalletBalanceLamports, fetchLiveTokenBalance } from '../liveExecutor.js';
 import { activeStrategy } from '../db/settings.js';
@@ -16,6 +16,7 @@ import { updateCandidateStatus } from '../db/candidates.js';
 import { createTradeIntent } from '../db/intents.js';
 
 export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], triggerCandidateId = null) {
+  if (DRY_RUN_LOCK) throw new Error('DRY RUN LOCK ACTIVE - live trading disabled.');
   const strat = activeStrategy();
   const amountLamports = Math.floor((strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
   const balance = await liveWalletBalanceLamports();
@@ -46,6 +47,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
 }
 
 export async function executeLiveSell(position, reason) {
+  if (DRY_RUN_LOCK) throw new Error('DRY RUN LOCK ACTIVE - live trading disabled.');
   const amount = position.token_amount_raw || position.token_amount_est;
   if (!amount || Number(amount) <= 0) throw new Error('Live position has no token amount to sell.');
   return executeJupiterSwap({
@@ -56,6 +58,7 @@ export async function executeLiveSell(position, reason) {
 }
 
 export async function executeConfirmedIntent(chatId, intentId) {
+  if (DRY_RUN_LOCK) return bot.sendMessage(chatId, 'DRY RUN LOCK ACTIVE - live trading disabled. Use /unlock_confirm for instructions.');
   const intent = intentById(intentId);
   if (!intent || intent.status !== 'pending_confirmation') return bot.sendMessage(chatId, 'Pending intent not found.');
   if (!canOpenMorePositions()) {

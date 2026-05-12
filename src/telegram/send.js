@@ -58,7 +58,7 @@ export async function sendBatch(chatId, batchId) {
     text: `${index + 1}. ${row.candidate.token?.symbol || short(row.candidate.token?.mint || '')}`,
     callback_data: `cand:${row.id}`,
   }]));
-  keyboard.push([{ text: 'Positions', callback_data: 'menu:positions' }]);
+  keyboard.push([{ text: 'Positions', callback_data: `menu:positions:batch:${batchId}` }]);
   return bot.sendMessage(chatId, lines.filter(Boolean).join('\n'), {
     parse_mode: 'HTML',
     disable_web_page_preview: true,

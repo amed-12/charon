@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { DB_PATH } from '../config.js';
+import { runMigrations } from './migrations.js';
 
 export const db = new Database(DB_PATH);
 
@@ -212,6 +213,22 @@ export function initDb() {
   const defaults = {
     agent_enabled: 'true',
     trading_mode: process.env.TRADING_MODE || 'dry_run',
+    dry_run_lock: process.env.DRY_RUN_LOCK || 'true',
+    dry_run_simulated_slippage_bps: process.env.DRY_RUN_SIMULATED_SLIPPAGE_BPS || '300',
+    dry_run_platform_fee_bps: process.env.DRY_RUN_PLATFORM_FEE_BPS || '100',
+    dry_run_priority_fee_sol: process.env.DRY_RUN_PRIORITY_FEE_SOL || '0.0005',
+    dry_run_failed_tx_rate: process.env.DRY_RUN_FAILED_TX_RATE || '0.03',
+    max_daily_loss_sol: process.env.MAX_DAILY_LOSS_SOL || '0.2',
+    max_daily_trades: process.env.MAX_DAILY_TRADES || '20',
+    max_consecutive_losses: process.env.MAX_CONSECUTIVE_LOSSES || '3',
+    cooldown_after_loss_streak_minutes: process.env.COOLDOWN_AFTER_LOSS_STREAK_MINUTES || '60',
+    max_position_size_sol: process.env.MAX_POSITION_SIZE_SOL || '0.05',
+    max_wallet_exposure_percent: process.env.MAX_WALLET_EXPOSURE_PERCENT || '30',
+    min_liquidity_usd: process.env.MIN_LIQUIDITY_USD || '5000',
+    min_holders_for_live: process.env.MIN_HOLDERS_FOR_LIVE || '300',
+    block_if_top20_holder_percent_above: process.env.BLOCK_IF_TOP20_HOLDER_PERCENT_ABOVE || '60',
+    block_if_rug_ratio_above: process.env.BLOCK_IF_RUG_RATIO_ABOVE || '0.3',
+    block_if_bundler_rate_above: process.env.BLOCK_IF_BUNDLER_RATE_ABOVE || '0.4',
     llm_candidate_pick_count: process.env.LLM_CANDIDATE_PICK_COUNT || '10',
     llm_candidate_max_age_ms: process.env.LLM_CANDIDATE_MAX_AGE_MS || String(10 * 60 * 1000),
     llm_min_confidence: '75',
@@ -243,6 +260,7 @@ export function initDb() {
   };
   const insert = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [key, value] of Object.entries(defaults)) insert.run(key, value);
+  runMigrations(db, ensureColumn);
 
   // Seed default strategies
   const stratInsert = db.prepare('INSERT OR IGNORE INTO strategies (id, name, enabled, config_json, created_at_ms) VALUES (?, ?, ?, ?, ?)');

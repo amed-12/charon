@@ -3,6 +3,7 @@ import { ENABLE_LLM, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_TIMEOUT_MS } from
 import { now, json, stripThinking, strictJsonFromText } from '../utils.js';
 import { fmtPct } from '../format.js';
 import { db } from '../db/connection.js';
+import { closedTradeRows, strategyBreakdown } from '../services/performance.js';
 
 export function fallbackLessons(summary) {
   const lessons = [];
@@ -92,6 +93,93 @@ export function storeLearningRun(windowMs, summary, lessons, raw) {
     INSERT INTO learning_lessons (run_id, created_at_ms, status, lesson, evidence_json)
     VALUES (?, ?, 'active', ?, ?)
   `);
-  for (const item of lessons) insert.run(runId, now(), item.lesson, json(item.evidence || {}));
+  const generated = generateEvidenceLessons(windowMs);
+  const richLessons = generated.length ? generated : lessons;
+  for (const item of richLessons) insert.run(runId, now(), item.lesson || item.finding, json(item.evidence || item));
+  const insertGenerated = db.prepare(`
+    INSERT INTO generated_lessons (created_at_ms, window, metric, finding, evidence, recommendation, confidence_level)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const item of generated) {
+    insertGenerated.run(now(), item.window, item.metric, item.finding, item.evidenceText, item.recommendation, item.confidenceLevel);
+  }
   return runId;
+}
+
+function confidenceLevel(n) {
+  if (n < 30) return 'LOW CONFIDENCE';
+  if (n < 100) return 'MEDIUM CONFIDENCE';
+  return 'HIGH CONFIDENCE';
+}
+
+function windowLabel(windowMs) {
+  if (windowMs % (24 * 60 * 60_000) === 0) return `${windowMs / (24 * 60 * 60_000)}d`;
+  if (windowMs % (60 * 60_000) === 0) return `${windowMs / (60 * 60_000)}h`;
+  return `${Math.round(windowMs / 60_000)}m`;
+}
+
+export function generateEvidenceLessons(windowMs) {
+  const label = windowLabel(windowMs);
+  const rows = closedTradeRows(label);
+  const lessons = [];
+  for (const s of strategyBreakdown(label)) {
+    if (s.trades < 5) continue;
+    if (s.netPnl > 0 && s.winRate >= 40) {
+      lessons.push({
+        window: label,
+        metric: 'strategy',
+        finding: `${s.strategyId} produced positive net PnL with ${s.winRate.toFixed(1)}% win rate.`,
+        evidenceText: `n=${s.trades}, net=${s.netPnl.toFixed(4)} SOL, profit_factor=${Number.isFinite(s.profitFactor) ? s.profitFactor.toFixed(2) : 'inf'}`,
+        recommendation: `Keep ${s.strategyId} enabled for dry-run collection; avoid increasing live size until n>=100.`,
+        confidenceLevel: confidenceLevel(s.trades),
+        lesson: `${s.strategyId} had ${s.winRate.toFixed(1)}% win rate and ${s.netPnl.toFixed(4)} SOL net over ${label} (n=${s.trades}). Suggest keeping it in dry-run rotation; ${confidenceLevel(s.trades)}.`,
+        evidence: s,
+      });
+    }
+    if (s.netPnl < 0) {
+      lessons.push({
+        window: label,
+        metric: 'strategy',
+        finding: `${s.strategyId} had negative expectancy.`,
+        evidenceText: `n=${s.trades}, net=${s.netPnl.toFixed(4)} SOL, win_rate=${s.winRate.toFixed(1)}%`,
+        recommendation: `Tighten ${s.strategyId} filters or disable it until the next dry-run review.`,
+        confidenceLevel: confidenceLevel(s.trades),
+        lesson: `${s.strategyId} produced negative net PnL of ${s.netPnl.toFixed(4)} SOL over ${label} (n=${s.trades}). Suggest tightening filters; ${confidenceLevel(s.trades)}.`,
+        evidence: s,
+      });
+    }
+  }
+  const lowConfidence = rows.filter(r => Number(r.llm_confidence || 0) < 70);
+  if (lowConfidence.length >= 5) {
+    const net = lowConfidence.reduce((sum, r) => sum + Number(r.net_pnl_sol ?? r.pnl_sol ?? 0), 0);
+    if (net < 0) {
+      lessons.push({
+        window: label,
+        metric: 'llm_confidence',
+        finding: 'LLM confidence below 70 underperformed.',
+        evidenceText: `n=${lowConfidence.length}, net=${net.toFixed(4)} SOL`,
+        recommendation: 'Consider raising llm_min_confidence or only using low-confidence entries as watchlist candidates.',
+        confidenceLevel: confidenceLevel(lowConfidence.length),
+        lesson: `LLM confidence below 70 lost ${Math.abs(net).toFixed(4)} SOL net over ${label} (n=${lowConfidence.length}). Consider raising llm_min_confidence; ${confidenceLevel(lowConfidence.length)}.`,
+        evidence: { count: lowConfidence.length, net },
+      });
+    }
+  }
+  const highMcap = rows.filter(r => Number(r.entry_mcap || 0) >= 250000);
+  if (highMcap.length >= 5) {
+    const net = highMcap.reduce((sum, r) => sum + Number(r.net_pnl_sol ?? r.pnl_sol ?? 0), 0);
+    if (net < 0) {
+      lessons.push({
+        window: label,
+        metric: 'entry_mcap',
+        finding: 'Entries above 250k mcap produced negative net PnL.',
+        evidenceText: `n=${highMcap.length}, net=${net.toFixed(4)} SOL`,
+        recommendation: 'Consider lowering max_mcap_usd for affected strategies.',
+        confidenceLevel: confidenceLevel(highMcap.length),
+        lesson: `Entries above 250k mcap lost ${Math.abs(net).toFixed(4)} SOL net over ${label} (n=${highMcap.length}). Consider lowering max_mcap_usd; ${confidenceLevel(highMcap.length)}.`,
+        evidence: { count: highMcap.length, net },
+      });
+    }
+  }
+  return lessons.slice(0, 8);
 }

@@ -17,7 +17,10 @@ export const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 export const GMGN_API_KEY = process.env.GMGN_API_KEY;
 export const GMGN_ENABLED = process.env.GMGN_ENABLED !== 'false';
 export const JUPITER_API_KEY = process.env.JUPITER_API_KEY || '';
-export const SOLANA_PRIVATE_KEY = process.env.SOLANA_PRIVATE_KEY || process.env.PRIVATE_KEY || '';
+export const DRY_RUN_LOCK = process.env.DRY_RUN_LOCK !== 'false';
+export const ENV_TRADING_MODE = process.env.TRADING_MODE || 'dry_run';
+export const EFFECTIVE_TRADING_MODE = DRY_RUN_LOCK ? 'dry_run' : ENV_TRADING_MODE;
+export const SOLANA_PRIVATE_KEY = DRY_RUN_LOCK ? '' : (process.env.SOLANA_PRIVATE_KEY || process.env.PRIVATE_KEY || '');
 export const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 export const SOLANA_WS_URL = process.env.SOLANA_WS_URL || `wss://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 export const JUPITER_SWAP_BASE_URL = process.env.JUPITER_SWAP_BASE_URL || 'https://api.jup.ag/swap/v2';
@@ -26,6 +29,23 @@ export const LIVE_MIN_SOL_RESERVE_LAMPORTS = Math.floor(Number(process.env.LIVE_
 export const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://api.minimax.io/v1';
 export const LLM_API_KEY = process.env.LLM_API_KEY || '';
 export const LLM_MODEL = process.env.LLM_MODEL || 'MiniMax-M2.7';
+
+export const DRY_RUN_SIMULATED_SLIPPAGE_BPS = Number(process.env.DRY_RUN_SIMULATED_SLIPPAGE_BPS || 300);
+export const DRY_RUN_PLATFORM_FEE_BPS = Number(process.env.DRY_RUN_PLATFORM_FEE_BPS || 100);
+export const DRY_RUN_PRIORITY_FEE_SOL = Number(process.env.DRY_RUN_PRIORITY_FEE_SOL || 0.0005);
+export const DRY_RUN_FAILED_TX_RATE = Number(process.env.DRY_RUN_FAILED_TX_RATE || 0.03);
+
+export const MAX_DAILY_LOSS_SOL = Number(process.env.MAX_DAILY_LOSS_SOL || 0.2);
+export const MAX_DAILY_TRADES = Number(process.env.MAX_DAILY_TRADES || 20);
+export const MAX_CONSECUTIVE_LOSSES = Number(process.env.MAX_CONSECUTIVE_LOSSES || 3);
+export const COOLDOWN_AFTER_LOSS_STREAK_MINUTES = Number(process.env.COOLDOWN_AFTER_LOSS_STREAK_MINUTES || 60);
+export const MAX_POSITION_SIZE_SOL = Number(process.env.MAX_POSITION_SIZE_SOL || 0.05);
+export const MAX_WALLET_EXPOSURE_PERCENT = Number(process.env.MAX_WALLET_EXPOSURE_PERCENT || 30);
+export const MIN_LIQUIDITY_USD = Number(process.env.MIN_LIQUIDITY_USD || 5000);
+export const MIN_HOLDERS_FOR_LIVE = Number(process.env.MIN_HOLDERS_FOR_LIVE || 300);
+export const BLOCK_IF_TOP20_HOLDER_PERCENT_ABOVE = Number(process.env.BLOCK_IF_TOP20_HOLDER_PERCENT_ABOVE || 60);
+export const BLOCK_IF_RUG_RATIO_ABOVE = Number(process.env.BLOCK_IF_RUG_RATIO_ABOVE || 0.3);
+export const BLOCK_IF_BUNDLER_RATE_ABOVE = Number(process.env.BLOCK_IF_BUNDLER_RATE_ABOVE || 0.4);
 
 export const GRADUATED_POLL_MS = Number(process.env.GRADUATED_POLL_MS || 30_000);
 export const GRADUATED_LOOKBACK_MS = Number(process.env.GRADUATED_LOOKBACK_MS || 2 * 60 * 60 * 1000);
