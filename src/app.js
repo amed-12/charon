@@ -1,5 +1,5 @@
 import { setDefaultResultOrder } from 'node:dns';
-import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, POSITION_CHECK_MS, GRADUATED_POLL_MS, PUMPPORTAL_ENABLED, PREGRAD_ENABLED, TRENDING_POLL_MS, validateConfig } from './config.js';
+import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, POSITION_CHECK_MS, PUMPPORTAL_ENABLED, PREGRAD_ENABLED, TRENDING_POLL_MS, validateConfig } from './config.js';
 import { initDb } from './db/connection.js';
 import { initLiveExecution } from './liveExecutor.js';
 import { setupTelegram } from './telegram/commands.js';
@@ -61,16 +61,12 @@ export async function startCharon() {
     console.log(`[bot] ${APP_NAME} started (trenches-only mode)`);
   }
 
-  // Graduation polling — runs in both modes (GMGN /v1/token/info based detection)
+  // Graduation source — Helius detector remains degraded until its parser and cursor are verified
   const {
     startGraduationPolling,
-    fetchGraduatedCoins,
     setCandidateHandler: setGraduatedCandidateHandler,
   } = await import('./signals/graduated.js');
   setGraduatedCandidateHandler(processCandidateFromSignals);
-  const trackGraduation = makeFailureTracker('graduation poll', (msg) => sendTelegram(msg));
-  fetchGraduatedCoins().catch(err => console.log(`[graduated] initial fetch failed: ${err.message}`));
-  setInterval(() => trackGraduation(() => fetchGraduatedCoins()), GRADUATED_POLL_MS);
   startGraduationPolling();
 
   // Trending polling — runs in both modes

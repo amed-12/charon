@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { JSON_HEADERS, GRADUATED_LOOKBACK_MS, GRADUATED_POLL_MS } from '../config.js';
+import { JSON_HEADERS, GRADUATED_LOOKBACK_MS, GRADUATED_POLL_MS, HELIUS_API_KEY, SOLANA_RPC_URL } from '../config.js';
 import { now, sleep } from '../utils.js';
 import { numSetting, boolSetting } from '../db/settings.js';
 import { fetchGmgnTokenInfo, gmgnBackoffActive, setGmgnBackoff } from '../enrichment/gmgn.js';
@@ -8,6 +8,18 @@ export const graduated = new Map();
 const watchedMints = new Map();
 let pollTimer = null;
 let candidateHandler = null;
+
+export const GRADUATED_SOURCE_STATUS = Object.freeze({
+  source: 'helius',
+  route: 'graduated',
+  pollIntervalMs: GRADUATED_POLL_MS,
+  healthy: false,
+  state: HELIUS_API_KEY || (process.env.SOLANA_RPC_URL && String(SOLANA_RPC_URL).includes('helius')) ? 'degraded' : 'disabled',
+  reason: HELIUS_API_KEY || (process.env.SOLANA_RPC_URL && String(SOLANA_RPC_URL).includes('helius'))
+    ? 'helius_graduation_detector_unresolved'
+    : 'missing_helius_credential',
+  lastSuccessfulPollAtMs: null,
+});
 
 export function setCandidateHandler(fn) {
   candidateHandler = fn;
@@ -34,7 +46,7 @@ function getRecentPumpMints() {
   return new Set(watchedMints.keys());
 }
 
-export async function fetchGraduatedCoins() {
+export async function fetchPumpFunGraduatedDiagnostic() {
   try {
     const res = await axios.get('https://advanced-api-v2.pump.fun/coins/graduated', {
       timeout: 10_000,
@@ -157,23 +169,13 @@ async function pollLoop() {
 }
 
 export function startGraduationPolling() {
-  if (pollTimer) return;
-  if (!boolSetting('graduation_polling_enabled', true)) {
-    console.log('[graduated] polling disabled by setting');
-    return;
-  }
-  pollGraduationStatus().catch(err => handleGraduationPollError(err));
-  // fetchLatestPumpCoins removed — endpoint /coins/latest returns 404
-  pollTimer = setInterval(() => pollLoop().catch(err => handleGraduationPollError(err)), GRADUATED_POLL_MS);
-  console.log(`[graduated] polling started (interval ${GRADUATED_POLL_MS}ms)`);
+  console.log('[graduated] ' + GRADUATED_SOURCE_STATUS.state
+    + ': source=helius route=graduated interval=' + GRADUATED_SOURCE_STATUS.pollIntervalMs
+    + 'ms reason=' + GRADUATED_SOURCE_STATUS.reason);
+  return GRADUATED_SOURCE_STATUS;
 }
 
-export function stopGraduationPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
+export function stopGraduationPolling() {}
 
 export function _internalForTest() {
   return { graduated, watchedMints, isGraduated, getRecentPumpMints };
