@@ -15,6 +15,11 @@ import { sendTelegram } from '../telegram/send.js';
 const PREGRAD_LAMPORTS = 1_000_000_000;
 const MAX_CONSECUTIVE_ERRORS = 3;
 
+export function isPregradRssrInWindow(rssrLamports, minLamports, maxLamports) {
+  const rssr = Number(rssrLamports);
+  return Number.isFinite(rssr) && rssr >= minLamports && rssr <= maxLamports;
+}
+
 const PUMPFUN_HEADERS = {
   ...JSON_HEADERS,
   Origin: 'https://pump.fun',
@@ -109,7 +114,7 @@ export async function fetchPregradTokens() {
     for (const coin of coins) {
       if (!coin || coin.complete) continue;
       const rssr = Number(coin.real_sol_reserves);
-      if (!Number.isFinite(rssr) || rssr < minLamports || rssr >= maxLamports) continue;
+      if (!isPregradRssrInWindow(rssr, minLamports, maxLamports)) continue;
 
       const createdTs = Number(coin.created_timestamp);
       if (Number.isFinite(createdTs) && createdTs > 0) {

@@ -6,13 +6,12 @@ Charon is a Telegram bot that screens Solana pump.fun tokens, runs them through 
 
 ## What changed in this fork
 
-- **FLOW filter** — candidates need `s1h_priceChange >= 0` and `net_buyer_ratio_5m >= 0.2` before they enter the pipeline. Cut a lot of dying-chart entries.
+- **Jupiter flow hard filters** — finite `stats1h.priceChange < 0` and finite `stats5m.numNetBuyers / numTraders < 0.2` reject; missing/non-finite flow data passes.
 - **PumpPortal WebSocket source** — real-time graduated-token stream instead of polling. Also feeds the pre-graduation scanner.
 - **Pre-grad scanner** — optional module that watches tokens before they hit the bonding curve cap.
 - **GMGN signed auth** — enrichment calls use Ed25519-signed requests against GMGN's API for holder counts, fees, and socials.
-- **Trailing TP guard** — trailing take-profit no longer triggers on underwater positions. It used to "lock in profits" at a loss. Fixed.
-- **Tightened exit logic** — trailing stop narrows once a position clears a peak threshold, with a profit floor after arming. Reduces giving back runners.
-- **Fill-to-fill dry run pricing** — paper entries use an executable Jupiter buy quote and exits use executable Jupiter sell quotes, instead of synthetic mark prices. Recorded PnL includes the simulated entry/exit fill difference and execution fees, so dry-run results track live execution more closely.
+- **Verified Sniper trailing policy** — +75% arms the fixed 10% high-water trail; fixed TP only closes immediately when trailing is disabled.
+- **Dry-run safety** — paper entries use 2% simulated slippage and never sign or broadcast transactions; read-only Jupiter data/quotes may still be used for monitoring.
 - **Telegram reports + visual cards** — daily PnL reports and rendered entry/exit cards.
 - **Backtest tooling** — scripts that run filter candidates against local trade history so changes get measured before they get deployed.
 - **Live execution hardening** — realized PnL tracking, sell guards, Jupiter Ultra routing.
@@ -24,9 +23,9 @@ Everything from the original still applies: signal server, strategies (`sniper`,
 This fork now includes:
 
 - **LLM Decision Cache** (`migrations/001_decision_cache.sql`) — WATCH/PASS verdicts cached 10min/60min to cut redundant LLM calls by ~60-70%. Invalidates on >20% mcap or >30% holder change.
-- **ML Momentum Filter** (`src/pipeline/momentumFilter.js` + `src/pipeline/predict_momentum.py`) — Python subprocess scoring candidates 0.0-1.0 using the bundled model artifacts in `models/`. Uses `momentum_threshold` (default `0.5`). The model, scaler, and feature metadata are included in the repository, so forks can run momentum scoring immediately.
-- **Hybrid Filter Strategy** (`OPTION_C_IMPLEMENTATION.md`) — bot holders ≥25% → HARD REJECT; holder deadzone [100,400] + dev migrations ≥20 → 50% size cut. Expected +20 SOL uplift based on 30-day backtest.
-- **Tier 1 Universal Filters** (`TIER1_FILTERS.md`) — 3 data-driven filters from 634-trade backtest with bucketed evidence.
+- **Momentum V2 adapter** (`src/pipeline/momentumFilter.js` + `scripts/predict_momentum.py`) — fixed 8-feature contract, threshold 0.5, 8-second timeout, and fail-open errors. The bundled 41-feature Gradient Boosting artifact is retained as lineage but is not compatible or enabled.
+- **Soft audit scoring** — bot holders, bot percentage, top-10 concentration, developer migrations, and bundler quality remain scoring inputs rather than Sniper hard rejects.
+- **Verified Sniper policy integration** — full executable contract and compatibility notes are documented in [`docs/SNIPER_POLICY_INTEGRATION.md`](docs/SNIPER_POLICY_INTEGRATION.md).
 - **Code Audit** (`AUDIT_OPUS_2026-07-07.md`) — Claude Opus 4.8 static audit: 3 CRITICAL findings including C1 (Jupiter slippage cap never sent) and C2 (post-swap dedup → orphaned tokens).
 - **Backtest Edge Analysis** (`BACKTEST_EDGE_2026-07-07.md`) — 1,146-position split-half backtest showing regime decay: 40.3% WR (+5.1 SOL) → 25.7% WR (-3.9 SOL).
 - **Bug Fixes** (`BUGFIX_SUMMARY.md`) — 4 LLM-layer fixes: cache, pre-filter guard, execution failure logging, past-win audit trail.
@@ -76,7 +75,7 @@ Strategy parameters live in SQLite, not `.env`, and are hot-read — most tuning
 
 Run it, open Telegram, `/menu`.
 
-Start with `TRADING_MODE=dry_run`. Watch it for a week. Dry-run now uses executable Jupiter quotes for both entry and exit, but it is still an estimate: RPC/API failures can trigger fallbacks and live swaps add wallet state, confirmation, and timing risk. Only then decide if live is worth it.
+Start with `TRADING_MODE=dry_run`. Watch it for a week. Dry-run applies 2% simulated slippage and sends no transaction, but it is still an estimate: RPC/API failures can trigger price fallbacks and live swaps add wallet state, confirmation, and timing risk. Only then decide if live is worth it.
 
 ## Honest warnings
 

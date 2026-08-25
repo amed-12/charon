@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { JUPITER_API_KEY, JSON_HEADERS, TRENDING_LOOKBACK_MS } from '../config.js';
 import { now, json } from '../utils.js';
-import { numSetting, boolSetting, setting } from '../db/settings.js';
+import { numSetting, boolSetting, setting, activeStrategy } from '../db/settings.js';
 import { db } from '../db/connection.js';
 import { gmgnBackoffActive, setGmgnBackoff, gmgnFetch, normalizedTrendingRows } from '../enrichment/gmgn.js';
 import { normalizeJupiterTrendingRow } from '../enrichment/jupiter.js';
@@ -127,7 +127,7 @@ export async function fetchGmgnTrending() {
       tracked++;
       storeSignalEvent(mint, 'trending', token.source || source, token);
       if (degenHandler) await degenHandler(mint, token);
-      if (trendingCandidateHandler) {
+      if (trendingCandidateHandler && activeStrategy().id !== 'sniper') {
         trendingCandidateHandler({ mint, trendingToken: token, route: 'trending' }).catch(err =>
           console.log(`[trending] candidate trigger failed for ${mint.slice(0, 8)}: ${err.message}`),
         );

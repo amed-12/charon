@@ -1,124 +1,84 @@
-/**
- * Momentum filter — calls Python ML model to predict if a candidate
- * will be a runner (TRAILING_TP) or sideways (MAX_HOLD).
- * 
- * SAFETY: If the model fails or times out, returns PASS so Charon
- * never gets stuck waiting for ML.
- */
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { momentumFeatures, SNIPER_POLICY } from './sniperPolicy.js';
 
-import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import path from 'path';
+export const MOMENTUM_MODEL = Object.freeze({
+  type: 'Random Forest',
+  version: 'V2',
+  dated: '2026-07-15',
+  featureOrder: [
+    'price_change_1h',
+    'price_change_5m',
+    'price_change_1m',
+    'smart_degen_count',
+    'holder_count',
+    'liquidity',
+    'bundler_rate',
+    'organic_score',
+  ],
+});
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PYTHON_SCRIPT = path.join(__dirname, 'predict_momentum.py');
-const TIMEOUT_MS = 8000; // 8 seconds max for Python
-const DEFAULT_THRESHOLD = 0.5;
+const DEFAULT_SCRIPT = fileURLToPath(new URL('../../scripts/predict_momentum.py', import.meta.url));
 
-/**
- * Score a candidate using the momentum model.
- * Spawns a fresh Python process per request (model is small, loads fast).
- */
-export async function momentumFilter(candidate, threshold = DEFAULT_THRESHOLD) {
-  const startTime = Date.now();
-  const mint = candidate.token?.mint?.slice(0, 8) || 'unknown';
-  
-  // Check if we have price data
-  const price = candidate.gmgn?.price || {};
-  if (!price.price && !price.price_1h) {
-    console.log(`[momentum] ${mint}... no price data — pass`);
-    return { passed: true, score: 1.0, reason: 'no_price_data' };
-  }
-  
-  return new Promise((resolve) => {
-    const proc = spawn('python3', [PYTHON_SCRIPT], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: TIMEOUT_MS,
-    });
-    
-    let stdout = '';
-    let stderr = '';
-    let resolved = false;
-    
-    const finish = (result) => {
-      if (resolved) return;
-      resolved = true;
-      try { proc.kill(); } catch (e) { /* ignore */ }
-      resolve(result);
-    };
-    
-    const timeout = setTimeout(() => {
-      stderr && console.error(`[momentum] ${mint}... stderr: ${stderr.trim()}`);
-      console.error(`[momentum] ${mint}... timeout after ${TIMEOUT_MS}ms — pass`);
-      finish({ passed: true, score: -1, reason: 'timeout' });
-    }, TIMEOUT_MS);
-    
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-    
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-    
-    proc.on('error', (err) => {
-      clearTimeout(timeout);
-      console.error(`[momentum] ${mint}... spawn error: ${err.message} — pass`);
-      finish({ passed: true, score: -1, reason: err.message });
-    });
-    
-    proc.on('close', (code) => {
-      clearTimeout(timeout);
-      
-      if (code !== 0) {
-        console.error(`[momentum] ${mint}... exit code ${code} — pass`);
-        finish({ passed: true, score: -1, reason: `exit_${code}` });
-        return;
-      }
-      
-      try {
-        const result = JSON.parse(stdout.trim());
-        const score = result.momentum_score;
-        
-        if (score < 0) {
-          console.error(`[momentum] ${mint}... model error: ${result.error} — pass`);
-          finish({ passed: true, score: -1, reason: result.error });
+export function runMomentumPrediction(features, { timeoutMs = SNIPER_POLICY.momentumTimeoutMs, script = DEFAULT_SCRIPT } = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.env.PYTHON_BIN || 'python3',
+      [script, JSON.stringify(features)],
+      { timeout: timeoutMs, maxBuffer: 64 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          error.details = String(stderr || '').trim();
+          reject(error);
           return;
         }
-        
-        const passed = score >= threshold;
-        const latency = Date.now() - startTime;
-        
-        if (!passed) {
-          console.log(`[momentum] ${mint}... REJECTED score=${score.toFixed(3)} < ${threshold} (${latency}ms)`);
-        } else {
-          console.log(`[momentum] ${mint}... PASSED score=${score.toFixed(3)} (${latency}ms)`);
+        try {
+          resolve(JSON.parse(String(stdout || '').trim()));
+        } catch (parseError) {
+          reject(new Error(`invalid momentum output: ${parseError.message}`));
         }
-        
-        finish({ passed, score, latency });
-      } catch (e) {
-        console.error(`[momentum] ${mint}... JSON parse error: ${e.message} — pass`);
-        finish({ passed: true, score: -1, reason: 'parse_error' });
-      }
-    });
-    
-    // Send candidate JSON to Python
-    const input = JSON.stringify({ candidate });
-    proc.stdin.write(input);
-    proc.stdin.end();
+      },
+    );
   });
 }
 
-/**
- * Synchronous fallback — always passes.
- */
-export function momentumScoreSync(candidate) {
-  return { passed: true, score: 1.0, reason: 'sync_fallback' };
-}
-
-/**
- * Get the current momentum threshold from strategy.
- */
-export function getMomentumThreshold(strat) {
-  return strat?.momentum_threshold ?? DEFAULT_THRESHOLD;
+export async function momentumFilter(candidate, { runPrediction = runMomentumPrediction } = {}) {
+  const { features, missing } = momentumFeatures(candidate);
+  if (missing.length) {
+    return {
+      passed: true,
+      failsafe: true,
+      status: 'missing_data',
+      probability: null,
+      threshold: SNIPER_POLICY.momentumThreshold,
+      features,
+      missing,
+    };
+  }
+  try {
+    const prediction = await runPrediction(features);
+    const probability = Number(prediction?.runner_probability ?? prediction?.probability);
+    if (!Number.isFinite(probability)) throw new Error('runner probability missing');
+    return {
+      passed: probability >= SNIPER_POLICY.momentumThreshold,
+      failsafe: false,
+      status: 'predicted',
+      probability,
+      threshold: SNIPER_POLICY.momentumThreshold,
+      features,
+      missing: [],
+      model: prediction?.model || MOMENTUM_MODEL,
+    };
+  } catch (error) {
+    return {
+      passed: true,
+      failsafe: true,
+      status: error?.killed || error?.code === 'ETIMEDOUT' ? 'timeout' : 'model_error',
+      probability: null,
+      threshold: SNIPER_POLICY.momentumThreshold,
+      features,
+      missing: [],
+      error: String(error?.details || error?.message || error),
+    };
+  }
 }

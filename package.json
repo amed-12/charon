@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check src/app.js && node --check src/config.js && node --check src/liveExecutor.js"
+    "check": "node --check index.js && node --check src/app.js && node --check src/config.js && node --check src/liveExecutor.js && node --check src/pipeline/candidateBuilder.js && node --check src/pipeline/candidateFilter.js && node --check src/pipeline/legacyCandidateFilter.js && node --check src/pipeline/duplicateGuard.js && node --check src/pipeline/sniperPolicy.js && node --check src/pipeline/sniperPipeline.js && node --check src/pipeline/momentumFilter.js && node --check src/pipeline/ruleBasedDecision.js && node --check src/pipeline/orchestrator.js && node --check src/db/positionConfig.js && node --check src/db/positions.js && node --check src/execution/positionPolicy.js && node --check src/execution/positions.js && node --check src/execution/router.js && node --check src/signals/sniperRoutes.js && node --check src/signals/pumpfunPregrad.js && node --check src/signals/pumpportal.js && node --check src/signals/serverClient.js",
+    "test": "DB_PATH=:memory: TELEGRAM_BOT_TOKEN= TELEGRAM_CHAT_ID= node test/sniper-spec.test.js && DB_PATH=:memory: TELEGRAM_BOT_TOKEN= TELEGRAM_CHAT_ID= node test/sniper-score-tiers.test.js && DB_PATH=:memory: TELEGRAM_BOT_TOKEN= TELEGRAM_CHAT_ID= node test/sniper-duplicate-boundaries.test.js"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

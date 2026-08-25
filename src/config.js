@@ -22,6 +22,10 @@ export const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || `https://mainnet.hel
 export const SOLANA_WS_URL = process.env.SOLANA_WS_URL || `wss://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 export const JUPITER_SWAP_BASE_URL = process.env.JUPITER_SWAP_BASE_URL || 'https://api.jup.ag/swap/v2';
 export const JUPITER_SLIPPAGE_BPS = Number(process.env.JUPITER_SLIPPAGE_BPS || 300);
+export const DRY_RUN_SLIPPAGE_BPS = Number(process.env.DRY_RUN_SLIPPAGE_BPS || 200);
+export const SNIPER_ATR_SL_MULT = Number(process.env.SNIPER_ATR_SL_MULT || 2.5);
+export const SNIPER_ATR_SL_FLOOR_PCT = -50;
+export const SNIPER_ATR_SL_CEILING_PCT = -8;
 export const LIVE_MIN_SOL_RESERVE_LAMPORTS = Math.floor(Number(process.env.LIVE_MIN_SOL_RESERVE || 0.02) * 1_000_000_000);
 export const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1';
 export const LLM_API_KEY = process.env.LLM_API_KEY || '';

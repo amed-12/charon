@@ -7,6 +7,11 @@ import { fetchGmgnTokenInfo, gmgnBackoffActive, setGmgnBackoff } from '../enrich
 export const graduated = new Map();
 const watchedMints = new Map();
 let pollTimer = null;
+let candidateHandler = null;
+
+export function setCandidateHandler(fn) {
+  candidateHandler = fn;
+}
 
 const PUMP_FUN_GRADUATION_LIQUIDITY_SOL = 85;
 const PUMP_FUN_GRADUATION_MARKET_CAP_USD = Number(process.env.PUMP_FUN_GRADUATION_MCAP_USD || 69000);
@@ -42,7 +47,14 @@ export async function fetchGraduatedCoins() {
       if (!mint) continue;
       const graduationDate = Number(coin.graduationDate || 0);
       if (graduationDate > 0 && graduationDate < cutoff) continue;
-      graduated.set(mint, { ...coin, coinMint: mint, seenAt: now(), source: 'pump_graduated' });
+      const wasKnown = graduated.has(mint);
+      const graduatedCoin = { ...coin, coinMint: mint, seenAt: now(), source: 'pump_graduated' };
+      graduated.set(mint, graduatedCoin);
+      if (!wasKnown && candidateHandler) {
+        candidateHandler({ mint, graduatedCoin, route: 'graduated' }).catch(error =>
+          console.log(`[graduated] candidate trigger failed for ${mint.slice(0, 8)}: ${error.message}`),
+        );
+      }
     }
     for (const [mint, coin] of graduated) {
       const ts = Number(coin.graduationDate || coin.seenAt || 0);
@@ -100,7 +112,7 @@ export async function pollGraduationStatus() {
     if (!info) continue;
     if (!isGraduated(info)) continue;
     const entry = watchedMints.get(mint) || {};
-    graduated.set(mint, {
+    const graduatedCoin = {
       coinMint: mint,
       name: info.name || entry.name || '',
       ticker: info.symbol || entry.symbol || '',
@@ -114,9 +126,13 @@ export async function pollGraduationStatus() {
       detectedAt: now(),
       source: 'gmgn_polling',
       gmgnInfo: info,
-    });
+    };
+    graduated.set(mint, graduatedCoin);
     detected++;
     console.log(`[graduated] detected via gmgn /v1/token/info: ${mint.slice(0, 8)}... liquidity=${info.liquidity_sol ?? info.liquidity} mcap=${info.market_cap ?? info.mcap}`);
+    if (candidateHandler) {
+      await candidateHandler({ mint, graduatedCoin, route: 'graduated' });
+    }
   }
   for (const [mint, coin] of graduated) {
     const ts = Number(coin.graduationDate || coin.seenAt || 0);

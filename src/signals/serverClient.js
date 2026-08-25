@@ -4,6 +4,7 @@ import { now } from '../utils.js';
 import { activeStrategy } from '../db/settings.js';
 import { storeSignalEvent, trendingSignalPass, trending } from './trending.js';
 import { graduated } from './graduated.js';
+import { sniperRouteForSignal } from './sniperRoutes.js';
 
 let candidateHandler = null;
 let degenHandler = null;
@@ -114,15 +115,20 @@ export async function fetchServerSignals() {
         if (tokenAge > strat.token_age_max_ms) { processed++; continue; }
       }
 
-      // Determine route
-      let route = null;
-      if (hasFee && graduatedCoin && trendingToken) route = 'fee_graduated_trending';
-      else if (hasFee && graduatedCoin) route = 'fee_graduated';
-      else if (hasFee && trendingToken) route = 'fee_trending';
-      else if (graduatedCoin && trendingToken) route = 'graduated_trending';
-      else if (sourceCount >= 3) route = 'multi_source';
-      else if (sourceCount >= 2) route = 'dual_source';
-      else route = 'single_source';
+      // Preserve Kaiser acquisition, then normalize route names at the policy boundary.
+      let route = strat.id === 'sniper'
+        ? sniperRouteForSignal(signal, { hasFee, hasTrending: Boolean(trendingToken) })
+        : null;
+      if (strat.id === 'sniper' && !route) { processed++; continue; }
+      if (!route) {
+        if (hasFee && graduatedCoin && trendingToken) route = 'fee_graduated_trending';
+        else if (hasFee && graduatedCoin) route = 'fee_graduated';
+        else if (hasFee && trendingToken) route = 'fee_trending';
+        else if (graduatedCoin && trendingToken) route = 'graduated_trending';
+        else if (sourceCount >= 3) route = 'multi_source';
+        else if (sourceCount >= 2) route = 'dual_source';
+        else route = 'single_source';
+      }
 
       // Build fee object if present
       let fee = null;

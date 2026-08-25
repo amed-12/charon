@@ -5,7 +5,7 @@ import { WSOL_MINT, LIVE_MIN_SOL_RESERVE_LAMPORTS } from '../config.js';
 import { escapeHtml, fmtSol } from '../format.js';
 import { executeJupiterSwap, liveWalletBalanceLamports, fetchLiveTokenBalance } from '../liveExecutor.js';
 import { activeStrategy } from '../db/settings.js';
-import { createLivePosition, canOpenMorePositions, openPositionCount } from '../db/positions.js';
+import { beginLivePosition, completeLivePosition, failLivePosition, canOpenMorePositions, openPositionCount } from '../db/positions.js';
 import { intentById } from '../db/intents.js';
 import { logDecisionEvent } from '../db/decisions.js';
 import { refreshCandidateForExecution } from './positions.js';
@@ -25,6 +25,13 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     throw new Error(`Insufficient SOL balance. Need ${fmtSol((amountLamports + LIVE_MIN_SOL_RESERVE_LAMPORTS) / 1_000_000_000)} SOL including reserve.`);
   }
   const candidate = selectedRow.candidate;
+  const reservation = beginLivePosition(
+    selectedRow.id, candidate, decision, `live_batch_${batchId}`,
+  );
+  if (reservation.duplicate) {
+    throw new Error(`Position ${reservation.positionId} is already ${reservation.status}; refusing duplicate entry.`);
+  }
+  const positionId = reservation.positionId;
   let swap = null;
   let lastError = null;
   for (let attempt = 1; attempt <= ENTRY_MAX_ATTEMPTS; attempt++) {
@@ -49,13 +56,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
   }
   if (!swap) {
     // Record the failed attempt as a closed position so the failure is auditable.
-    const failedSwap = { signature: null, outputAmount: null, error: lastError?.message || 'unknown' };
-    const { id: positionId } = createLivePosition(selectedRow.id, candidate, decision, failedSwap, 'FAILED_ENTRY');
-    db.prepare(`
-      UPDATE dry_run_positions
-      SET status = 'closed', closed_at_ms = ?, exit_reason = 'FAILED_ENTRY', pnl_percent = 0, pnl_sol = 0
-      WHERE id = ?
-    `).run(now(), positionId);
+    failLivePosition(positionId, lastError || new Error('unknown live entry failure'));
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, 'FAILED_ENTRY', ?)
@@ -83,7 +84,8 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     ].join('\n'));
     throw lastError || new Error('Live buy failed without exception');
   }
-  const { id: positionId, isNew } = createLivePosition(selectedRow.id, candidate, decision, swap, `live_batch_${batchId}`);
+  completeLivePosition(positionId, swap, `live_batch_${batchId}`);
+  const isNew = true;
   logDecisionEvent({
     batchId,
     triggerCandidateId,
@@ -137,6 +139,14 @@ export async function executeConfirmedIntent(chatId, intentId) {
       db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('rejected_insufficient_balance', now(), intentId);
       return bot.sendMessage(chatId, `Insufficient SOL balance. Need ${fmtSol((amountLamports + LIVE_MIN_SOL_RESERVE_LAMPORTS) / 1_000_000_000)} SOL.`, { parse_mode: 'HTML' });
     }
+    const begun = beginLivePosition(
+      intent.candidate_id, freshRow.candidate, decision, `confirmed_intent_${intentId}`,
+    );
+    if (begun.duplicate) {
+      db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('rejected_duplicate', now(), intentId);
+      return bot.sendMessage(chatId, `Already holding position ${begun.positionId} (${begun.status}).`);
+    }
+    const positionId = begun.positionId;
     const swap = await executeJupiterSwap({
       inputMint: WSOL_MINT,
       outputMint: freshRow.candidate.token.mint,
@@ -145,7 +155,8 @@ export async function executeConfirmedIntent(chatId, intentId) {
     if (!swap.outputAmount) {
       swap.outputAmount = await fetchLiveTokenBalance(freshRow.candidate.token.mint) || swap.outputAmount;
     }
-    const { id: positionId, isNew } = createLivePosition(intent.candidate_id, freshRow.candidate, decision, swap, `confirmed_intent_${intentId}`);
+    completeLivePosition(positionId, swap, `confirmed_intent_${intentId}`);
+    const isNew = true;
     db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('executed_live', now(), intentId);
     logDecisionEvent({
       batchId: null,

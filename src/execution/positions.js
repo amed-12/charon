@@ -2,6 +2,7 @@ import { now, json } from '../utils.js';
 import { numSetting, boolSetting, strategyById, slippageAdjustedMcap } from '../db/settings.js';
 import { db } from '../db/connection.js';
 import { firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn, computeAtrPercent, dynamicStopLossPercent } from '../utils.js';
+import { SNIPER_ATR_SL_CEILING_PCT, SNIPER_ATR_SL_FLOOR_PCT, SNIPER_ATR_SL_MULT } from '../config.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
 import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl, fetchTokenSpotViaQuote } from '../enrichment/jupiter.js';
 import { liveWalletPubkey } from '../liveExecutor.js';
@@ -12,6 +13,25 @@ import { updateCandidateSnapshot } from '../db/candidates.js';
 import { trending } from '../signals/trending.js';
 import { executeLiveSell } from './router.js';
 import { sendPositionExit } from '../telegram/send.js';
+import {
+  atrStopPercent,
+  evaluatePositionSignals,
+  maxHoldExpired,
+  standardExitReason,
+  trailingExitHit,
+} from './positionPolicy.js';
+
+const DEFAULT_EXECUTION_REFRESH_DEPENDENCIES = {
+  fetchGmgnTokenInfo,
+  fetchJupiterAsset,
+  fetchJupiterHolders,
+  fetchJupiterChartContext,
+  fetchSavedWalletExposure,
+  filterCandidate,
+  getTrendingToken: (mint) => trending.get(mint),
+  now,
+  updateCandidateSnapshot,
+};
 
 export async function freshEntryMarket(mint, candidate) {
   const gmgn = await fetchGmgnTokenInfo(mint, false);
@@ -27,34 +47,21 @@ export async function freshEntryMarket(mint, candidate) {
   return { gmgn, asset, priceUsd, marketCapUsd, refreshedAtMs: now() };
 }
 
-export async function refreshCandidateForExecution(row) {
+export async function refreshCandidateForExecution(row, dependencies = {}) {
+  const deps = { ...DEFAULT_EXECUTION_REFRESH_DEPENDENCIES, ...dependencies };
   const candidate = row.candidate;
   const mint = candidate.token.mint;
-  const route = candidate.signals?.route || '';
-  const isFresh = route.includes('pumpportal_graduated');
-
-  let gmgn, asset, holders, chart;
-
-  if (isFresh) {
-    // Fast path: skip GMGN (Cloudflare blocked) and chart (no data for freshly graduated)
-    [asset, holders] = await Promise.all([
-      fetchJupiterAsset(mint, { useCache: false }),
-      fetchJupiterHolders(mint),
-    ]);
-    gmgn = null;
-    chart = null;
-  } else {
-    [gmgn, asset, holders] = await Promise.all([
-      fetchGmgnTokenInfo(mint, false),
-      fetchJupiterAsset(mint, { useCache: false }),
-      fetchJupiterHolders(mint),
-    ]);
-    chart = null;  // chart not used in buy path — saves 10s timeout
-  }
-  const selectedTrending = trending.get(mint) || candidate.trending || null;
+  const freshGraduate = candidate.signals?.route === 'pumpportal_graduated';
+  const [gmgn, asset, holders, chart] = await Promise.all([
+    freshGraduate ? Promise.resolve(null) : deps.fetchGmgnTokenInfo(mint, false),
+    deps.fetchJupiterAsset(mint, { useCache: false }),
+    deps.fetchJupiterHolders(mint),
+    freshGraduate ? Promise.resolve(null) : deps.fetchJupiterChartContext(mint),
+  ]);
+  const selectedTrending = deps.getTrendingToken(mint) || candidate.trending || null;
   const selectedHolders = holders?.holders?.length ? holders : candidate.holders;
-  const selectedSavedWalletExposure = selectedHolders
-    ? await fetchSavedWalletExposure(mint, selectedHolders)
+  const selectedSavedWalletExposure = !freshGraduate && selectedHolders
+    ? await deps.fetchSavedWalletExposure(mint, selectedHolders)
     : candidate.savedWalletExposure;
   const priceUsd = firstPositiveNumber(tokenPriceFromGmgn(gmgn), asset?.usdPrice, selectedTrending?.price, candidate.metrics?.priceUsd);
   const marketCapUsd = firstPositiveNumber(
@@ -95,7 +102,7 @@ export async function refreshCandidateForExecution(row) {
     chart,
     savedWalletExposure: selectedSavedWalletExposure,
     executionRefresh: {
-      refreshedAtMs: now(),
+      refreshedAtMs: deps.now(),
       source: 'pre_execution',
       marketCapUsd,
       priceUsd,
@@ -103,7 +110,7 @@ export async function refreshCandidateForExecution(row) {
       holdersRefreshed: Boolean(holders?.holders?.length),
     },
   };
-  refreshed.filters = filterCandidate(refreshed);
+  refreshed.filters = deps.filterCandidate(refreshed);
   const executionFailures = [];
   if (!Number.isFinite(Number(refreshed.metrics.marketCapUsd)) || Number(refreshed.metrics.marketCapUsd) <= 0) {
     executionFailures.push('execution mcap: missing');
@@ -118,7 +125,7 @@ export async function refreshCandidateForExecution(row) {
       failures: [...(refreshed.filters?.failures || []), ...executionFailures],
     };
   }
-  updateCandidateSnapshot(row.id, refreshed, refreshed.filters.passed ? 'candidate' : 'filtered');
+  deps.updateCandidateSnapshot(row.id, refreshed, refreshed.filters.passed ? 'candidate' : 'filtered');
   return { ...row, candidate: refreshed };
 }
 
@@ -165,41 +172,68 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
       const chart = await fetchJupiterChartContext(position.mint);
       const windows = Array.isArray(chart?.windows) ? chart.windows : [];
       atrPercent = computeAtrPercent(windows, numSetting('atr_period', 14));
-      effectiveSlPercent = dynamicStopLossPercent({
-        baseSlPercent: Number(position.sl_percent),
-        atrPercent,
-        multiplier: Number(stratForSl?.atr_sl_multiplier ?? numSetting('atr_sl_multiplier', 1.5)),
-        floorPercent: Number(stratForSl?.atr_sl_floor_percent ?? numSetting('atr_sl_floor_percent', -50)),
-        ceilingPercent: Number(stratForSl?.atr_sl_ceiling_percent ?? numSetting('atr_sl_ceiling_percent', -8)),
-        minAtrPercent: Number(stratForSl?.atr_sl_min_atr_percent ?? numSetting('atr_sl_min_atr_percent', 4)),
-        maxAtrPercent: Number(stratForSl?.atr_sl_max_atr_percent ?? numSetting('atr_sl_max_atr_percent', 30)),
-      });
+      effectiveSlPercent = stratForSl?.id === 'sniper'
+        ? atrStopPercent(position.sl_percent, atrPercent, {
+            mult: SNIPER_ATR_SL_MULT,
+            floor: SNIPER_ATR_SL_FLOOR_PCT,
+            ceiling: SNIPER_ATR_SL_CEILING_PCT,
+          })
+        : dynamicStopLossPercent({
+            baseSlPercent: Number(position.sl_percent),
+            atrPercent,
+            multiplier: Number(stratForSl?.atr_sl_multiplier ?? numSetting('atr_sl_multiplier', 1.5)),
+            floorPercent: Number(stratForSl?.atr_sl_floor_percent ?? numSetting('atr_sl_floor_percent', -50)),
+            ceilingPercent: Number(stratForSl?.atr_sl_ceiling_percent ?? numSetting('atr_sl_ceiling_percent', -8)),
+            minAtrPercent: Number(stratForSl?.atr_sl_min_atr_percent ?? numSetting('atr_sl_min_atr_percent', 4)),
+            maxAtrPercent: Number(stratForSl?.atr_sl_max_atr_percent ?? numSetting('atr_sl_max_atr_percent', 30)),
+          });
     } catch (err) {
       console.log(`[atr] chart refresh failed for ${position.mint.slice(0, 8)}... ${err.message}`);
     }
   }
-  const tpHit = pnlPercent >= Number(position.tp_percent);
-  const slHit = pnlPercent <= effectiveSlPercent && pnlPercent < 0; // Lesson 3: don't SL if PnL positive
-  const armThreshold = numSetting('trailing_arm_percent', Number(position.tp_percent));
-  const armHit = pnlPercent >= armThreshold;
-  const trailingArmed = position.trailing_armed || (position.trailing_enabled && armHit);
-  const trailDrop = highWaterMcap > 0 ? (Number(mcap) / highWaterMcap - 1) * 100 : 0;
-  // EXIT-FIX 2026-07-25 (backtest 933 trades 07-22..25: base +1,685% -> +8,766% ideal / +6,314% gap).
-  // (1) TIGHT TRAIL: once peak pnl >= trailing_tight_from_percent (40), trail tightens from
-  //     trailing_percent (10) to trailing_tight_percent (5). Rescues armed winners that round-trip
-  //     to SL (97 armed+SL trades = -6,497% pnl in window).
-  // (2) FLOOR: once armed, trailing may not exit below trailing_floor_percent (+8). Kills the
-  //     +1.7% "gap-dump between 3s ticks" exits (dump lands below arm before next check).
-  // Partial@arm REJECTED by backtest (-867%): caps the runners that carry total profit.
-  const peakPnl = Number(position.entry_mcap) > 0
-    ? (highWaterMcap / Number(position.entry_mcap) - 1) * 100
-    : pnlPercent;
-  const tightFrom = numSetting('trailing_tight_from_percent', 40);
-  const effectiveTrailPct = peakPnl >= tightFrom
-    ? numSetting('trailing_tight_percent', 5)
-    : Math.abs(Number(position.trailing_percent));
-  const trailingFloor = numSetting('trailing_floor_percent', 8);
-  const trailingHit = trailingArmed && position.trailing_enabled && pnlPercent >= trailingFloor && trailDrop <= -effectiveTrailPct;
+  const hasLiveQuote = firstPositiveNumber(quoteMcap, jupiterMcap) != null;
+  const isSniper = stratForSl?.id === 'sniper';
+  let tpHit;
+  let slHit;
+  let trailingArmed;
+  let trailDrop;
+  let trailingHit;
+  if (isSniper) {
+    ({ tpHit, slHit, trailingArmed, trailDrop } = evaluatePositionSignals({
+      hasLiveQuote,
+      pnlPercent,
+      tpPercent: position.tp_percent,
+      slPercent: effectiveSlPercent,
+      trailingArmed: position.trailing_armed,
+      trailingEnabled: position.trailing_enabled,
+      mcap,
+      highWaterMcap,
+    }));
+    trailingHit = trailingExitHit({
+      hasLiveQuote,
+      trailingArmed,
+      trailingEnabled: position.trailing_enabled,
+      trailDrop,
+      trailingPercent: Math.abs(Number(position.trailing_percent)),
+    });
+  } else {
+    // Preserve Kaiser's pre-integration exit policy for every non-Sniper strategy.
+    tpHit = pnlPercent >= Number(position.tp_percent);
+    slHit = pnlPercent <= effectiveSlPercent && pnlPercent < 0;
+    const armThreshold = numSetting('trailing_arm_percent', Number(position.tp_percent));
+    trailingArmed = position.trailing_armed || (position.trailing_enabled && pnlPercent >= armThreshold);
+    trailDrop = highWaterMcap > 0 ? (Number(mcap) / highWaterMcap - 1) * 100 : 0;
+    const peakPnl = Number(position.entry_mcap) > 0
+      ? (highWaterMcap / Number(position.entry_mcap) - 1) * 100
+      : pnlPercent;
+    const tightFrom = numSetting('trailing_tight_from_percent', 40);
+    const effectiveTrailPct = peakPnl >= tightFrom
+      ? numSetting('trailing_tight_percent', 5)
+      : Math.abs(Number(position.trailing_percent));
+    const trailingFloor = numSetting('trailing_floor_percent', 8);
+    trailingHit = trailingArmed && position.trailing_enabled
+      && pnlPercent >= trailingFloor && trailDrop <= -effectiveTrailPct;
+  }
   let exitReason = null;
   let closed = false;
 
@@ -217,7 +251,7 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   //   effectiveMaxHold = 900000; // 15 min for highcap >60K
   //   console.log(`[position] highcap >60K — max_hold reduced to 15min`);
   // }
-  if (effectiveMaxHold > 0 && (now() - position.opened_at_ms) >= effectiveMaxHold) {
+  if (maxHoldExpired(effectiveMaxHold, position.opened_at_ms, now())) {
     exitReason = 'MAX_HOLD';
   }
 
@@ -259,9 +293,12 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
 
   // Standard exit checks
   if (!exitReason) {
-    if (slHit) exitReason = 'SL';
-    else if (tpHit && !position.trailing_enabled) exitReason = 'TP';
-    else if (trailingHit) exitReason = 'TRAILING_TP';
+    exitReason = standardExitReason({
+      slHit,
+      tpHit,
+      trailingEnabled: position.trailing_enabled,
+      trailingHit,
+    });
   }
 
 

@@ -7,6 +7,11 @@ import { sendTelegram } from '../telegram/send.js';
 
 const WS_URL = `wss://pumpportal.fun/api/data?api-key=${PUMPPORTAL_API_KEY}`;
 const RECONNECT_DELAY_MS = 5_000;
+
+export const PUMPPORTAL_SUBSCRIPTIONS = Object.freeze([
+  'subscribeNewToken',
+  'subscribeMigration',
+]);
 const MAX_RECONNECT_MS = 60_000;
 
 const MONITOR_INTERVAL_MS = 30_000;
@@ -366,10 +371,9 @@ function onOpen() {
   }
   disconnectAlertSent = false;
 
-  // Subscribe to new token creation (free tier)
-  ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
-  // Also subscribe to migration in case PumpPortal re-enables it
-  ws.send(JSON.stringify({ method: 'subscribeMigration' }));
+  for (const method of PUMPPORTAL_SUBSCRIPTIONS) {
+    ws.send(JSON.stringify({ method }));
+  }
 }
 
 function connect() {

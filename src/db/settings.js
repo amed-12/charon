@@ -83,15 +83,18 @@ export function strategySetting(key, fallback) {
 function defaultStrategy() {
   return {
     id: 'sniper', name: 'Sniper',
-    entry_mode: 'immediate', min_source_count: 2, require_fee_claim: true,
-    token_age_max_ms: 3600000, min_mcap_usd: 7000, max_mcap_usd: 200000,
-    min_fee_claim_sol: 0.5, min_gmgn_total_fee_sol: 10, min_holders: 0,
+    entry_mode: 'immediate', min_source_count: 1, require_fee_claim: false,
+    token_age_max_ms: 0, min_mcap_usd: 0, max_mcap_usd: 0,
+    min_fee_claim_sol: 0.5, min_gmgn_total_fee_sol: 0, min_holders: 0,
     max_top20_holder_percent: 100, min_saved_wallet_holders: 0, max_ath_distance_pct: 0,
     min_graduated_volume_usd: 0, trending_min_volume_usd: 0, trending_min_swaps: 0,
-    trending_max_rug_ratio: 0.3, trending_max_bundler_rate: 0.5,
-    position_size_sol: 0.1, max_open_positions: 3,
-    tp_percent: 50, sl_percent: -25, trailing_enabled: true, trailing_percent: 20,
+    trending_max_rug_ratio: 0, trending_max_bundler_rate: 0,
+    position_size_sol: 0.1, max_open_positions: 5,
+    tp_percent: 75, sl_percent: -35, trailing_enabled: true, trailing_percent: 10,
     partial_tp: false, partial_tp_at_percent: 0, partial_tp_sell_percent: 0,
-    max_hold_ms: 0, use_llm: true, llm_min_confidence: 50,
+    max_hold_ms: 1_800_000, sideways_timeout_minutes: 0,
+    use_llm: false, llm_min_confidence: 50, momentum_threshold: 0.5,
+    momentum_timeout_ms: 8_000, use_dynamic_sl: true, atr_sl_multiplier: 2.5,
+    atr_sl_floor_percent: -50, atr_sl_ceiling_percent: -8,
   };
 }

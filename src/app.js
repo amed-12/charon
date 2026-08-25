@@ -1,5 +1,5 @@
 import { setDefaultResultOrder } from 'node:dns';
-import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, POSITION_CHECK_MS, PUMPPORTAL_API_KEY, PUMPPORTAL_ENABLED, PREGRAD_ENABLED, TRENDING_POLL_MS, validateConfig } from './config.js';
+import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, POSITION_CHECK_MS, GRADUATED_POLL_MS, PUMPPORTAL_API_KEY, PUMPPORTAL_ENABLED, PREGRAD_ENABLED, TRENDING_POLL_MS, validateConfig } from './config.js';
 import { initDb } from './db/connection.js';
 import { initLiveExecution } from './liveExecutor.js';
 import { setupTelegram } from './telegram/commands.js';
@@ -49,8 +49,10 @@ export async function startCharon() {
   } else {
     // ── Trenches-only mode: direct polling of GMGN trenches ─────────────────
     const { fetchTrenches, setCandidateHandler } = await import('./signals/trenches.js');
+    const { startWebsocket: startFeeClaimWebsocket } = await import('./signals/feeClaim.js');
 
     setCandidateHandler(processCandidateFromSignals);
+    startFeeClaimWebsocket();
 
     await fetchTrenches().catch(error => console.log(`[trenches] initial fetch failed: ${error.message}`));
     // Reduced from 30s to 60s — pump.fun direct source is faster and more reliable
@@ -60,10 +62,15 @@ export async function startCharon() {
   }
 
   // Graduation polling — runs in both modes (GMGN /v1/token/info based detection)
-  const { startGraduationPolling, fetchGraduatedCoins } = await import('./signals/graduated.js');
+  const {
+    startGraduationPolling,
+    fetchGraduatedCoins,
+    setCandidateHandler: setGraduatedCandidateHandler,
+  } = await import('./signals/graduated.js');
+  setGraduatedCandidateHandler(processCandidateFromSignals);
   const trackGraduation = makeFailureTracker('graduation poll', (msg) => sendTelegram(msg));
   fetchGraduatedCoins().catch(err => console.log(`[graduated] initial fetch failed: ${err.message}`));
-  setInterval(() => trackGraduation(() => fetchGraduatedCoins()), 60_000);
+  setInterval(() => trackGraduation(() => fetchGraduatedCoins()), GRADUATED_POLL_MS);
   startGraduationPolling();
 
   // Trending polling — runs in both modes

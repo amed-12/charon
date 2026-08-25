@@ -1,0 +1,121 @@
+export const SNIPER_CONFIG = Object.freeze({
+  id: 'sniper',
+  name: 'Sniper',
+  entry_mode: 'immediate',
+  min_source_count: 1,
+  require_fee_claim: false,
+  token_age_max_ms: 0,
+  min_mcap_usd: 0,
+  max_mcap_usd: 0,
+  min_fee_claim_sol: 0.5,
+  min_gmgn_total_fee_sol: 0,
+  min_holders: 0,
+  max_top20_holder_percent: 100,
+  min_saved_wallet_holders: 0,
+  max_ath_distance_pct: 0,
+  min_graduated_volume_usd: 0,
+  trending_min_volume_usd: 0,
+  trending_min_swaps: 0,
+  trending_max_rug_ratio: 0,
+  trending_max_bundler_rate: 0,
+  position_size_sol: 0.1,
+  max_open_positions: 5,
+  tp_percent: 75,
+  sl_percent: -35,
+  trailing_enabled: true,
+  trailing_percent: 10,
+  partial_tp: false,
+  partial_tp_at_percent: 0,
+  partial_tp_sell_percent: 0,
+  max_hold_ms: 1_800_000,
+  use_llm: false,
+  llm_min_confidence: 50,
+});
+
+export function sniperCandidate(overrides = {}) {
+  const base = {
+    token: {
+      mint: 'SniperMint1111111111111111111111111111111',
+      symbol: 'SNIPE',
+      name: 'Sniper Fixture',
+    },
+    metrics: {
+      priceUsd: 0.01,
+      marketCapUsd: 50_000,
+      liquidityUsd: 12_000,
+      holderCount: 120,
+      netBuyerRatio5m: 0.5,
+      gmgnBuySellRatio: 1.5,
+      priceChange1h: 10,
+      priceChange5m: 5,
+      priceChange1m: 2,
+      bundlerRate: 0.05,
+      organicScore: 80,
+      trendingSmartDegenCount: 10,
+      graduatedVolumeUsd: 0,
+      graduatedMarketCapUsd: 50_000,
+    },
+    signals: {
+      route: 'fee_trending',
+      label: 'fees + trending',
+      hasFeeClaim: true,
+      hasGraduated: false,
+      hasTrending: true,
+      strategy: 'sniper',
+    },
+    feeClaim: { distributedSol: 0.1 },
+    graduation: null,
+    trending: { is_wash_trading: false, bundler_rate: 0.05, smart_degen_count: 10 },
+    gmgn: {
+      price: { price: 0.01, price_1m: 0.0098, price_5m: 0.0095, price_1h: 0.009 },
+      stat: { bot_degen_count: 0, bot_degen_rate: 0, top_10_holder_rate: 0.1 },
+      liquidity: 12_000,
+      market_cap: 50_000,
+      holder_count: 120,
+    },
+    jupiterAsset: {
+      usdPrice: 0.01,
+      mcap: 50_000,
+      liquidity: 12_000,
+      holderCount: 120,
+      organicScore: 80,
+      stats1h: { priceChange: 10, numOrganicBuyers: 10 },
+      stats5m: { priceChange: 5, numNetBuyers: 30, numTraders: 60, numOrganicBuyers: 10 },
+      audit: {
+        botHoldersCount: 0,
+        botHoldersPercentage: 0,
+        topHoldersPercentage: 10,
+        devMigrations: 0,
+      },
+    },
+    holders: { count: 120, holders: [{ address: 'holder' }], top20: [], top20Percent: 10, maxHolderPercent: 5 },
+    chart: { distanceFromAthPercent: -40 },
+    savedWalletExposure: { holderCount: 0, checked: 0, holders: [] },
+    twitterNarrative: null,
+    createdAtMs: 1_000_000,
+  };
+
+  return {
+    ...base,
+    ...overrides,
+    token: { ...base.token, ...(overrides.token || {}) },
+    metrics: { ...base.metrics, ...(overrides.metrics || {}) },
+    signals: { ...base.signals, ...(overrides.signals || {}) },
+    trending: overrides.trending === null ? null : { ...base.trending, ...(overrides.trending || {}) },
+    gmgn: overrides.gmgn === null ? null : { ...base.gmgn, ...(overrides.gmgn || {}) },
+    jupiterAsset: overrides.jupiterAsset === null
+      ? null
+      : { ...base.jupiterAsset, ...(overrides.jupiterAsset || {}) },
+  };
+}
+
+export function freshGraduateCandidate(overrides = {}) {
+  return sniperCandidate({
+    ...overrides,
+    signals: { route: 'pumpportal_graduated', hasFeeClaim: false, hasGraduated: true, hasTrending: false, ...(overrides.signals || {}) },
+    feeClaim: null,
+    gmgn: null,
+    graduation: { migrationSeconds: 12, ...(overrides.graduation || {}) },
+    metrics: { gmgnBuySellRatio: null, ...(overrides.metrics || {}) },
+  });
+}
