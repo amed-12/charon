@@ -7,6 +7,7 @@ import {
   compareEnrichment,
   latencyStats,
   matchCandidates,
+  summarizeDuplicateChecks,
   summarizeSourceEvents,
 } from '../scripts/shadow_report.mjs';
 
@@ -51,6 +52,34 @@ assert.equal(sourceSummary.totalRawEvents, 3);
 assert.equal(sourceSummary.uniqueMints, 2);
 assert.equal(sourceSummary.routeOverlap.twoRoutes, 1);
 assert.equal(sourceSummary.routeOverlap.oneRoute, 1);
+
+const duplicateTelemetry = {
+  available: true,
+  checks: [
+    {
+      checkedAtMs: 100, mint: 'A', symbol: 'AAA', route: 'pumpportal_graduated',
+      duplicateChecked: true, duplicateResult: 'PASS', duplicateReason: 'none',
+    },
+    {
+      checkedAtMs: 200, mint: 'B', symbol: 'BBB', route: 'graduated',
+      duplicateChecked: true, duplicateResult: 'REJECT', duplicateReason: 'closed_72h',
+    },
+    {
+      checkedAtMs: 300, mint: 'C', symbol: 'CCC', route: 'fee_claim',
+      duplicateChecked: true, duplicateResult: 'REJECT', duplicateReason: 'same_symbol_24h',
+    },
+  ],
+};
+const duplicateSummary = summarizeDuplicateChecks(duplicateTelemetry);
+assert.equal(duplicateSummary.available, true);
+assert.equal(duplicateSummary.totalChecks, 3);
+assert.equal(duplicateSummary.pass, 1);
+assert.equal(duplicateSummary.reject, 2);
+assert.equal(duplicateSummary.rejectionReasons.closed_72h, 1);
+assert.equal(duplicateSummary.rejectionReasons.same_symbol_24h, 1);
+assert.equal(duplicateSummary.byRoute.pumpportal_graduated.pass, 1);
+assert.equal(duplicateSummary.byRoute.graduated.reject, 1);
+assert.equal(summarizeDuplicateChecks({ available: false, checks: [] }).available, false);
 
 const kaiserRows = [
   candidate(1, 'A', 100_000, 'pumpportal_graduated'),
@@ -116,10 +145,12 @@ const report = buildParityReport({
   kaiser: {
     sourceEvents: [{ mint: 'A', route: 'pumpportal_graduated', atMs: 100_000 }],
     candidates: kaiserRows,
+    duplicateChecks: duplicateTelemetry,
   },
   charon: {
     sourceEvents: [{ mint: 'A', route: 'graduated', atMs: 140_000 }],
     candidates: charonRows,
+    duplicateChecks: { available: false, checks: [] },
   },
   sinceMs: 0, untilMs: 1_000_000,
   strictWindowMs: 60_000, looseWindowMs: 300_000, lowSampleThreshold: 30,
@@ -136,6 +167,13 @@ assert.equal(report.policyParity.sampleWarning, 'INSUFFICIENT SAMPLE');
 assert.equal(report.policyParity.stages.final.comparable, 2);
 assert.equal(report.policyParity.stages.final.identical, 2);
 assert.equal(report.policyParity.stages.duplicate.comparable, 0);
-assert.ok(report.unresolved.some(value => value.includes('Duplicate outcomes')));
+assert.equal(report.duplicateFunnel.kaiser.totalChecks, 3);
+assert.equal(report.duplicateFunnel.kaiser.pass, 1);
+assert.equal(report.duplicateFunnel.kaiser.reject, 2);
+assert.equal(report.duplicateFunnel.kaiser.byRoute.fee_claim.reject, 1);
+assert.equal(report.duplicateFunnel.charon.available, false);
+assert.equal(report.duplicateFunnel.referenceComparisonAvailable, false);
+assert.ok(report.unresolved.some(value => value.includes('duplicate parity')));
+assert.ok(report.unresolved.some(value => value.includes('Charon reference duplicate audit telemetry is unavailable')));
 
 console.log('=== Charon shadow report V2 tests complete ===');

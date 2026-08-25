@@ -109,6 +109,68 @@ function emptyRouteCounts() {
   return Object.fromEntries(CANONICAL_ROUTES.map(route => [route, 0]));
 }
 
+const DUPLICATE_REJECTION_REASONS = Object.freeze([
+  'open_position',
+  'closed_72h',
+  'decision_24h',
+  'candidate_10m',
+  'same_symbol_24h',
+]);
+
+function emptyDuplicateReasons() {
+  return Object.fromEntries(DUPLICATE_REJECTION_REASONS.map(reason => [reason, 0]));
+}
+
+function emptyDuplicateRouteSummary() {
+  return Object.fromEntries(CANONICAL_ROUTES.map(route => [route, {
+    totalChecks: 0,
+    pass: 0,
+    reject: 0,
+    rejectionReasons: emptyDuplicateReasons(),
+  }]));
+}
+
+export function summarizeDuplicateChecks(telemetry) {
+  if (!telemetry?.available) {
+    return {
+      available: false,
+      totalChecks: null,
+      pass: null,
+      reject: null,
+      rejectionReasons: null,
+      byRoute: null,
+    };
+  }
+
+  const summary = {
+    available: true,
+    totalChecks: 0,
+    pass: 0,
+    reject: 0,
+    rejectionReasons: emptyDuplicateReasons(),
+    byRoute: emptyDuplicateRouteSummary(),
+  };
+  for (const check of telemetry.checks || []) {
+    if (!check.duplicateChecked) continue;
+    const route = CANONICAL_ROUTES.includes(check.route) ? check.route : 'other';
+    const routeSummary = summary.byRoute[route];
+    summary.totalChecks++;
+    routeSummary.totalChecks++;
+    if (check.duplicateResult === 'REJECT') {
+      summary.reject++;
+      routeSummary.reject++;
+      if (Object.hasOwn(summary.rejectionReasons, check.duplicateReason)) {
+        summary.rejectionReasons[check.duplicateReason]++;
+        routeSummary.rejectionReasons[check.duplicateReason]++;
+      }
+    } else {
+      summary.pass++;
+      routeSummary.pass++;
+    }
+  }
+  return summary;
+}
+
 function countByRoute(rows) {
   const counts = emptyRouteCounts();
   for (const row of rows) counts[row.route] = (counts[row.route] || 0) + 1;
@@ -264,6 +326,37 @@ function normalizeCandidateRow(row) {
   };
 }
 
+function hasTable(db, name) {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(name));
+}
+
+function loadDuplicateChecks(db, sinceMs) {
+  if (!hasTable(db, 'shadow_duplicate_audit')) {
+    return { available: false, checks: [] };
+  }
+  const checks = db.prepare(`
+    SELECT id, checked_at_ms, mint, symbol, route,
+           duplicate_checked, duplicate_result, duplicate_reason
+    FROM shadow_duplicate_audit
+    WHERE checked_at_ms >= ?
+    ORDER BY checked_at_ms, id
+  `).all(sinceMs).map(row => ({
+    id: row.id,
+    checkedAtMs: Number(row.checked_at_ms),
+    mint: row.mint,
+    symbol: row.symbol,
+    route: canonicalRoute(row.route),
+    rawRoute: row.route,
+    duplicateChecked: Boolean(row.duplicate_checked),
+    duplicateResult: row.duplicate_result,
+    duplicateReason: row.duplicate_reason,
+  }));
+  return { available: true, checks };
+}
+
 export function loadRuntime(path, sinceMs) {
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
@@ -289,7 +382,8 @@ export function loadRuntime(path, sinceMs) {
       WHERE c.created_at_ms >= ?
       ORDER BY c.created_at_ms, c.id
     `).all(sinceMs).map(normalizeCandidateRow);
-    return { sourceEvents, candidates };
+    const duplicateChecks = loadDuplicateChecks(db, sinceMs);
+    return { sourceEvents, candidates, duplicateChecks };
   } finally {
     db.close();
   }
@@ -500,6 +594,8 @@ export function buildParityReport({
       final: parityCounter(routePairs, 'final'),
     }];
   }));
+  const kaiserDuplicateFunnel = summarizeDuplicateChecks(kaiser.duplicateChecks);
+  const charonDuplicateFunnel = summarizeDuplicateChecks(charon.duplicateChecks);
   return {
     generatedAtMs: Date.now(),
     window: { sinceMs, untilMs, strictWindowMs, looseWindowMs },
@@ -510,6 +606,11 @@ export function buildParityReport({
       mintJaccardByRoute: Object.fromEntries(CANONICAL_ROUTES.map(route => [
         route, mintJaccard(kaiser.sourceEvents, charon.sourceEvents, route),
       ])),
+    },
+    duplicateFunnel: {
+      kaiser: kaiserDuplicateFunnel,
+      charon: charonDuplicateFunnel,
+      referenceComparisonAvailable: kaiserDuplicateFunnel.available && charonDuplicateFunnel.available,
     },
     routeCoverage: {
       kaiserCandidates: countByRoute(kaiser.candidates),
@@ -560,7 +661,9 @@ export function buildParityReport({
     kaiserOnlyExamples: matched.kaiserOnly.slice(0, 20).map(row => ({ mint: shortMint(row.mint), route: row.rawRoute, atMs: row.atMs })),
     charonOnlyExamples: matched.charonOnly.slice(0, 20).map(row => ({ mint: shortMint(row.mint), route: row.rawRoute, atMs: row.atMs })),
     unresolved: [
-      stageParity.duplicate.comparable === 0 ? 'Duplicate outcomes are not persisted on accepted candidate rows.' : null,
+      stageParity.duplicate.comparable === 0 ? 'Candidate-pair duplicate parity is unavailable; duplicate outcomes use separate audit telemetry.' : null,
+      !kaiserDuplicateFunnel.available ? 'Kaiser duplicate audit telemetry is unavailable for this database.' : null,
+      !charonDuplicateFunnel.available ? 'Charon reference duplicate audit telemetry is unavailable; cross-runtime funnel comparison is not possible.' : null,
       policyComparable.length < lowSampleThreshold ? `Only ${policyComparable.length} policy-comparable pairs; threshold is ${lowSampleThreshold}.` : null,
     ].filter(Boolean),
   };
@@ -573,6 +676,22 @@ function pct(metric) {
 function printRoutes(title, counts) {
   console.log(title);
   for (const route of CANONICAL_ROUTES) console.log(`  ${route}: ${counts[route] || 0}`);
+}
+
+function printDuplicateSummary(name, summary) {
+  if (!summary.available) {
+    console.log(`  ${name}: unavailable (reference telemetry table absent)`);
+    return;
+  }
+  console.log(`  ${name}: checks=${summary.totalChecks} PASS=${summary.pass} REJECT=${summary.reject}`);
+  console.log(`    rejection reasons: ${DUPLICATE_REJECTION_REASONS
+    .map(reason => `${reason}=${summary.rejectionReasons[reason]}`)
+    .join(', ')}`);
+  console.log('    per route:');
+  for (const route of CANONICAL_ROUTES) {
+    const item = summary.byRoute[route];
+    console.log(`      ${route}: checks=${item.totalChecks} PASS=${item.pass} REJECT=${item.reject}`);
+  }
 }
 
 export function printHumanReport(report) {
@@ -589,10 +708,14 @@ export function printHumanReport(report) {
   printRoutes('  Charon source events:', report.sourceParity.charon.eventsPerRoute);
   const sourceRate = report.sourceParity.mintJaccard;
   console.log(`  unique-mint Jaccard: ${sourceRate.intersection}/${sourceRate.union} = ${sourceRate.rate == null ? 'n/a' : `${(sourceRate.rate * 100).toFixed(1)}%`}`);
-  console.log('\nC. Route Coverage');
+  console.log('\nC. Duplicate Funnel');
+  printDuplicateSummary('Kaiser', report.duplicateFunnel.kaiser);
+  printDuplicateSummary('Charon', report.duplicateFunnel.charon);
+  console.log('  reference comparison: ' + (report.duplicateFunnel.referenceComparisonAvailable ? 'available' : 'unavailable'));
+  console.log('\nD. Route Coverage');
   printRoutes('  Kaiser candidates:', report.routeCoverage.kaiserCandidates);
   printRoutes('  Charon candidates:', report.routeCoverage.charonCandidates);
-  console.log('\nD. Candidate Parity');
+  console.log('\nE. Candidate Parity');
   const candidate = report.candidateParity;
   console.log(`  raw candidates: Kaiser=${candidate.kaiserCandidates}, Charon=${candidate.charonCandidates}`);
   console.log(`  unique mints: Kaiser=${candidate.uniqueKaiserMints}, Charon=${candidate.uniqueCharonMints}`);
@@ -601,31 +724,31 @@ export function printHumanReport(report) {
   console.log(`  Kaiser-only=${candidate.kaiserOnlyCandidates} candidates/${candidate.kaiserOnlyMints} mints`);
   console.log(`  Charon-only=${candidate.charonOnlyCandidates} candidates/${candidate.charonOnlyMints} mints`);
   console.log(`  candidate Jaccard: ${candidate.strictMatched + candidate.looseOnlyMatched}/${candidate.matchUnion} = ${(candidate.matchJaccardRate * 100).toFixed(1)}%`);
-  console.log('\nE. Candidate Timing');
+  console.log('\nF. Candidate Timing');
   const timing = report.timing;
   console.log(`  samples=${timing.samples}, signed median=${timing.medianSignedDeltaMs ?? 'n/a'}ms`);
   console.log(`  absolute p50=${timing.absoluteDeltaMs.p50 ?? 'n/a'} p90=${timing.absoluteDeltaMs.p90 ?? 'n/a'} p95=${timing.absoluteDeltaMs.p95 ?? 'n/a'} max=${timing.absoluteDeltaMs.max ?? 'n/a'} ms`);
-  console.log('\nF. Enrichment Parity');
+  console.log('\nG. Enrichment Parity');
   const enrichment = report.enrichmentParity;
   console.log(`  fields: same=${enrichment.same}, missing_on_charon=${enrichment.missingOnCharon}, missing_on_kaiser=${enrichment.missingOnKaiser}, different=${enrichment.different}`);
-  console.log('\nG. Policy Parity');
+  console.log('\nH. Policy Parity');
   console.log(`  comparable pairs=${report.policyParity.comparablePairs}`);
   for (const stage of ['duplicate', 'hard', 'soft', 'pre', 'momentum']) {
     console.log(`  ${stage}: ${pct(report.policyParity.stages[stage])}`);
   }
   if (report.policyParity.sampleWarning) console.log(`  ${report.policyParity.sampleWarning}`);
-  console.log('\nH. Final Decision Parity');
+  console.log('\nI. Final Decision Parity');
   console.log(`  ${pct(report.policyParity.stages.final)}`);
   if (report.policyParity.sampleWarning) console.log(`  ${report.policyParity.sampleWarning}`);
-  console.log('\nI. Difference Classification');
+  console.log('\nJ. Difference Classification');
   const classifications = Object.entries(report.differenceClassifications);
   if (!classifications.length) console.log('  none');
   for (const [name, count] of classifications) console.log(`  ${name}: ${count}`);
-  console.log('\nJ. Kaiser-only Candidates');
+  console.log('\nK. Kaiser-only Candidates');
   console.log(`  ${JSON.stringify(report.kaiserOnlyExamples)}`);
-  console.log('\nK. Charon-only Candidates');
+  console.log('\nL. Charon-only Candidates');
   console.log(`  ${JSON.stringify(report.charonOnlyExamples)}`);
-  console.log('\nL. Unresolved / Insufficient Data');
+  console.log('\nM. Unresolved / Insufficient Data');
   if (!report.unresolved.length) console.log('  none');
   for (const item of report.unresolved) console.log(`  ${item}`);
 }

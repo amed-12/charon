@@ -19,6 +19,7 @@ import { short } from '../format.js';
 import { escapeHtml } from '../format.js';
 import { applySniperDecisionPipeline } from './sniperPipeline.js';
 import { checkDuplicateCandidate, checkPastWinGuard } from './duplicateGuard.js';
+import { recordShadowDuplicateCheck } from '../observability/duplicateAudit.js';
 
 export const seenSignalCandidates = new Map();
 
@@ -34,6 +35,15 @@ export async function processCandidateFromSignals(signals) {
   if (strategyAtSignal.id === 'sniper') {
     const symbol = signalSymbol(signals);
     const duplicate = checkDuplicateCandidate({ mint: signals.mint, symbol });
+    recordShadowDuplicateCheck({
+      timestamp: now(),
+      mint: signals.mint,
+      symbol,
+      route: signals.route,
+      duplicateChecked: true,
+      duplicateResult: duplicate.duplicate ? 'REJECT' : 'PASS',
+      duplicateReason: duplicate.rule,
+    });
     if (duplicate.duplicate) {
       console.log(`[duplicate] skip ${signals.mint.slice(0, 8)}... rule=${duplicate.rule} ${duplicate.detail}`);
       return;
