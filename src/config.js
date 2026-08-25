@@ -13,6 +13,8 @@ export const SOL_MINT = 'So11111111111111111111111111111111111111111';
 export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 export const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 export const TELEGRAM_TOPIC_ID = process.env.TELEGRAM_TOPIC_ID;
+export const TELEGRAM_ENABLED = process.env.TELEGRAM_ENABLED !== 'false';
+export const SHADOW_MODE = process.env.SHADOW_MODE === 'true';
 export const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 export const GMGN_API_KEY = process.env.GMGN_API_KEY;
 export const GMGN_ENABLED = process.env.GMGN_ENABLED !== 'false';
@@ -69,8 +71,8 @@ export const JSON_HEADERS = {
 };
 
 export function validateConfig() {
-  if (!TELEGRAM_BOT_TOKEN) throw new Error('TELEGRAM_BOT_TOKEN is required.');
-  if (!TELEGRAM_CHAT_ID) throw new Error('TELEGRAM_CHAT_ID is required.');
+  if (TELEGRAM_ENABLED && !TELEGRAM_BOT_TOKEN) throw new Error('TELEGRAM_BOT_TOKEN is required.');
+  if (TELEGRAM_ENABLED && !TELEGRAM_CHAT_ID) throw new Error('TELEGRAM_CHAT_ID is required.');
   if (!HELIUS_API_KEY && (!process.env.SOLANA_RPC_URL || !process.env.SOLANA_WS_URL)) {
     throw new Error('HELIUS_API_KEY is required unless SOLANA_RPC_URL and SOLANA_WS_URL are set.');
   }

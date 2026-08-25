@@ -1,5 +1,5 @@
 import { setDefaultResultOrder } from 'node:dns';
-import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, POSITION_CHECK_MS, GRADUATED_POLL_MS, PUMPPORTAL_API_KEY, PUMPPORTAL_ENABLED, PREGRAD_ENABLED, TRENDING_POLL_MS, validateConfig } from './config.js';
+import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, POSITION_CHECK_MS, GRADUATED_POLL_MS, PUMPPORTAL_ENABLED, PREGRAD_ENABLED, TRENDING_POLL_MS, validateConfig } from './config.js';
 import { initDb } from './db/connection.js';
 import { initLiveExecution } from './liveExecutor.js';
 import { setupTelegram } from './telegram/commands.js';
@@ -87,7 +87,7 @@ export async function startCharon() {
     startPumpfunPregrad(trackPregrad);
   }
 
-  if (PUMPPORTAL_API_KEY && PUMPPORTAL_ENABLED) {
+  if (PUMPPORTAL_ENABLED) {
     const { startPumpportal, setCandidateHandler: setPumpportalHandler } = await import('./signals/pumpportal.js');
     setPumpportalHandler(processCandidateFromSignals);
     startPumpportal();

@@ -2,6 +2,7 @@ import { db } from './connection.js';
 import { now, json } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy, slippageAdjustedMcap } from './settings.js';
 import { canOpenPositionAtCount, positionLimitFor, resolvePositionConfig } from './positionConfig.js';
+import { SHADOW_MODE } from '../config.js';
 
 export const HOLDING_STATUSES = ['open', 'entering', 'exiting'];
 
@@ -32,6 +33,7 @@ export function canOpenMorePositions() {
 }
 
 export function tradingMode() {
+  if (SHADOW_MODE) return 'dry_run';
   const mode = setting('trading_mode', 'dry_run');
   return ['dry_run', 'confirm', 'live'].includes(mode) ? mode : 'dry_run';
 }

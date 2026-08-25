@@ -26,16 +26,17 @@ function signalKey(signal) {
   return `${signal.mint}:${sources}`;
 }
 
-async function triggerCandidate({ mint, fee, signature, graduatedCoin, trendingToken, route }) {
+async function triggerCandidate({ mint, symbol, fee, signature, graduatedCoin, trendingToken, route }) {
   if (!candidateHandler) return;
-  await candidateHandler({ mint, fee, signature, graduatedCoin, trendingToken, route });
+  await candidateHandler({ mint, symbol, fee, signature, graduatedCoin, trendingToken, route });
 }
 
 export async function fetchServerSignals() {
   try {
+    const requestStrategy = activeStrategy();
     const url = new URL('/api/signals', SIGNAL_SERVER_URL);
     url.searchParams.set('limit', '100');
-    url.searchParams.set('minSources', '2');
+    url.searchParams.set('minSources', requestStrategy.id === 'sniper' ? '1' : '2');
 
     const res = await axios.get(url.toString(), {
       timeout: 10_000,
@@ -90,7 +91,6 @@ export async function fetchServerSignals() {
 
       const key = `signal:${mint}`;
       if (seenSignals.has(key)) { processed++; continue; }
-      seenSignals.set(key, now());
 
       // Store signal events
       for (const source of signal.sources) {
@@ -104,7 +104,7 @@ export async function fetchServerSignals() {
       const sourceCount = signal.sourceCount || 1;
 
       // Strategy gate: check source count
-      if (sourceCount < strat.min_source_count) { processed++; continue; }
+      if (strat.id !== 'sniper' && sourceCount < strat.min_source_count) { processed++; continue; }
 
       // Strategy gate: fee claim requirement
       if (strat.require_fee_claim && !hasFee) { processed++; continue; }
@@ -115,21 +115,21 @@ export async function fetchServerSignals() {
         if (tokenAge > strat.token_age_max_ms) { processed++; continue; }
       }
 
-      // Preserve Kaiser acquisition, then normalize route names at the policy boundary.
-      let route = strat.id === 'sniper'
-        ? sniperRouteForSignal(signal, { hasFee, hasTrending: Boolean(trendingToken) })
-        : null;
-      if (strat.id === 'sniper' && !route) { processed++; continue; }
-      if (!route) {
-        if (hasFee && graduatedCoin && trendingToken) route = 'fee_graduated_trending';
-        else if (hasFee && graduatedCoin) route = 'fee_graduated';
-        else if (hasFee && trendingToken) route = 'fee_trending';
-        else if (graduatedCoin && trendingToken) route = 'graduated_trending';
-        else if (sourceCount >= 3) route = 'multi_source';
-        else if (sourceCount >= 2) route = 'dual_source';
-        else route = 'single_source';
-      }
+      // Determine route
+      let route = null;
+      if (strat.id === 'sniper') route = sniperRouteForSignal(signal, {
+        hasFee, hasGraduated: Boolean(graduatedCoin), hasTrending: Boolean(trendingToken),
+      });
+      else if (hasFee && graduatedCoin && trendingToken) route = 'fee_graduated_trending';
+      else if (hasFee && graduatedCoin) route = 'fee_graduated';
+      else if (hasFee && trendingToken) route = 'fee_trending';
+      else if (graduatedCoin && trendingToken) route = 'graduated_trending';
+      else if (sourceCount >= 3) route = 'multi_source';
+      else if (sourceCount >= 2) route = 'dual_source';
+      else route = 'single_source';
+      if (!route) { processed++; continue; }
 
+      seenSignals.set(key, now());
       // Build fee object if present
       let fee = null;
       let signature = null;
@@ -151,7 +151,7 @@ export async function fetchServerSignals() {
         const athDist = signal.graduated?.distanceFromAthPercent;
         if (athDist != null && athDist <= strat.max_ath_distance_pct) {
           // Already at dip target, trigger immediately
-          await triggerCandidate({ mint, fee, signature, graduatedCoin, trendingToken, route });
+          await triggerCandidate({ mint, symbol: signal.symbol, fee, signature, graduatedCoin, trendingToken, route });
           triggered++;
         } else {
           // Store price alert for later
@@ -170,7 +170,7 @@ export async function fetchServerSignals() {
         }
       } else {
         // Immediate entry mode (sniper, smart_money, degen)
-        await triggerCandidate({ mint, fee, signature, graduatedCoin, trendingToken, route });
+        await triggerCandidate({ mint, symbol: signal.symbol, fee, signature, graduatedCoin, trendingToken, route });
         triggered++;
       }
 

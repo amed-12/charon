@@ -1,5 +1,5 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { TELEGRAM_BOT_TOKEN } from '../config.js';
+import { TELEGRAM_BOT_TOKEN, TELEGRAM_ENABLED } from '../config.js';
 
 // Without a token there is nothing to poll. Constructing a real TelegramBot here
 // would start a polling loop that 401s forever, so dry_run and headless test runs
@@ -19,6 +19,6 @@ function stubBot() {
   });
 }
 
-export const bot = TELEGRAM_BOT_TOKEN
+export const bot = TELEGRAM_ENABLED && TELEGRAM_BOT_TOKEN
   ? new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true })
   : stubBot();

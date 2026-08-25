@@ -8,6 +8,7 @@ import {
   JSON_HEADERS,
   SOLANA_PRIVATE_KEY,
   SOLANA_RPC_URL,
+  SHADOW_MODE,
 } from './config.js';
 
 let liveWallet = null;
@@ -21,6 +22,12 @@ function parseKeypair(secret) {
 }
 
 export function initLiveExecution() {
+  if (SHADOW_MODE) {
+    liveWallet = null;
+    solanaConnection = null;
+    console.log('[live] disabled by SHADOW_MODE');
+    return;
+  }
   if (!SOLANA_PRIVATE_KEY) return;
   try {
     liveWallet = parseKeypair(SOLANA_PRIVATE_KEY);
@@ -53,6 +60,7 @@ export async function fetchLiveTokenBalance(mint) {
 }
 
 export function requireLiveExecution() {
+  if (SHADOW_MODE) throw new Error('live execution is disabled by SHADOW_MODE.');
   if (!liveWallet || !solanaConnection) throw new Error('SOLANA_PRIVATE_KEY is required for live execution.');
   if (!JUPITER_API_KEY) throw new Error('JUPITER_API_KEY is required for live execution.');
 }
