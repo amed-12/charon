@@ -71,8 +71,6 @@ export const JSON_HEADERS = {
 };
 
 export function validateConfig() {
-  if (TELEGRAM_ENABLED && !TELEGRAM_BOT_TOKEN) throw new Error('TELEGRAM_BOT_TOKEN is required.');
-  if (TELEGRAM_ENABLED && !TELEGRAM_CHAT_ID) throw new Error('TELEGRAM_CHAT_ID is required.');
   if (!HELIUS_API_KEY && (!process.env.SOLANA_RPC_URL || !process.env.SOLANA_WS_URL)) {
     throw new Error('HELIUS_API_KEY is required unless SOLANA_RPC_URL and SOLANA_WS_URL are set.');
   }

@@ -1,24 +1,33 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM_BOT_TOKEN, TELEGRAM_ENABLED } from '../config.js';
 
-// Without a token there is nothing to poll. Constructing a real TelegramBot here
-// would start a polling loop that 401s forever, so dry_run and headless test runs
-// get a stub that logs instead of sending. Every method returns a resolved promise
-// so callers keep working unchanged.
-function stubBot() {
+function stubBot(reason) {
+  console.log(`[telegram] disabled: ${reason}`);
   const noop = async (...args) => {
-    console.log('[telegram] disabled (no TELEGRAM_BOT_TOKEN):', args[1] ?? args[0] ?? '');
+    if (args.length) console.log(`[telegram] skipped send: ${reason}`);
     return { message_id: 0 };
   };
   return new Proxy({}, {
     get(_target, prop) {
       if (prop === 'on' || prop === 'once' || prop === 'removeListener') return () => {};
       if (prop === 'isTelegramDisabled') return true;
+      if (prop === 'isPollingEnabled') return false;
       return noop;
     },
   });
 }
 
-export const bot = TELEGRAM_ENABLED && TELEGRAM_BOT_TOKEN
-  ? new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true })
-  : stubBot();
+function createBot() {
+  if (!TELEGRAM_ENABLED) return stubBot('TELEGRAM_ENABLED=false');
+  if (!TELEGRAM_BOT_TOKEN) return stubBot('token missing');
+
+  const telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+  telegramBot.isTelegramDisabled = false;
+  telegramBot.isPollingEnabled = true;
+  telegramBot.getMe()
+    .then(() => console.log('[telegram] polling enabled'))
+    .catch(err => console.log(`[telegram] authentication failed: ${err.message}`));
+  return telegramBot;
+}
+
+export const bot = createBot();
